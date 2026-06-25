@@ -51,6 +51,7 @@ rag_storage*/
 examples/input/
 examples/output/
 output*/
+uploads/
 
 # Miscellaneous
 .DS_Store
@@ -78,3 +79,4 @@ memory-bank/
 .claude/
 .cursor/
 CLAUDE.md
+.env

@@ -33,6 +33,7 @@ from raganything.utils import (
     get_equation_text_and_format,
     get_table_body,
     normalize_caption_list,
+    strip_thinking_tags,
 )
 
 
@@ -554,25 +555,13 @@ class BaseModalProcessor:
     def _strip_thinking_tags(text: str) -> str:
         """Remove <think>/<thinking> tags produced by reasoning models.
 
-        Models such as DeepSeek-R1 and Qwen2.5-think wrap their internal
-        chain-of-thought in ``<think>…</think>`` or ``<thinking>…</thinking>``
-        blocks before emitting the final answer.  When JSON parsing fails and
-        the raw LLM response is used as a fallback, storing the entire response
-        (including the reasoning preamble) pollutes the knowledge graph with
-        internal model thoughts rather than actual content descriptions.
-
-        This helper strips those blocks so that only the final answer text is
-        stored or surfaced to callers.
+        When JSON parsing fails and the raw LLM response is used as a
+        fallback, storing the entire response (including the reasoning
+        preamble) pollutes the knowledge graph with internal model thoughts
+        rather than actual content descriptions. This strips those blocks so
+        only the final answer text is stored or surfaced to callers.
         """
-        import re
-
-        cleaned = re.sub(
-            r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE
-        )
-        cleaned = re.sub(
-            r"<thinking>.*?</thinking>", "", cleaned, flags=re.DOTALL | re.IGNORECASE
-        )
-        return cleaned.strip()
+        return strip_thinking_tags(text)
 
     def _robust_json_parse(self, response: str) -> dict:
         """Robust JSON parsing with multiple fallback strategies"""
@@ -604,19 +593,9 @@ class BaseModalProcessor:
         """Extract all possible JSON candidates from response"""
         candidates = []
 
-        import re
-
         # Pre-process: Remove thinking/reasoning tags that some models use
         # This handles models like qwen2.5-think, deepseek-r1 that wrap reasoning in tags
-        cleaned_response = re.sub(
-            r"<think>.*?</think>", "", response, flags=re.DOTALL | re.IGNORECASE
-        )
-        cleaned_response = re.sub(
-            r"<thinking>.*?</thinking>",
-            "",
-            cleaned_response,
-            flags=re.DOTALL | re.IGNORECASE,
-        )
+        cleaned_response = strip_thinking_tags(response)
 
         # Method 1: JSON in code blocks
         json_blocks = re.findall(

@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAG-Anything Query</title>
+<style>
+  :root {
+    color-scheme: light;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f4f5f7;
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 48px 16px;
+    box-sizing: border-box;
+  }
+  .page {
+    width: 100%;
+    max-width: 640px;
+  }
+  .nav {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .nav a {
+    flex: 1;
+    text-align: center;
+    padding: 10px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 14px;
+    color: #374151;
+    text-decoration: none;
+    background: #fff;
+    border: 1px solid #d1d5db;
+    transition: background 0.15s ease;
+  }
+  .nav a:hover:not(.active) {
+    background: #f4f5f7;
+  }
+  .nav a.active {
+    background: #2563eb;
+    color: #fff;
+    border-color: #2563eb;
+  }
+  .card {
+    background: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+    padding: 32px;
+    width: 100%;
+    max-width: 640px;
+    box-sizing: border-box;
+    height: 80vh;
+    display: flex;
+    flex-direction: column;
+  }
+  h1 {
+    font-size: 22px;
+    margin: 0 0 4px;
+    color: #1a1a1a;
+  }
+  p.subtitle {
+    margin: 0 0 24px;
+    color: #6b7280;
+    font-size: 14px;
+  }
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 6px;
+  }
+  textarea {
+    width: 100%;
+    min-height: 96px;
+    padding: 12px;
+    font-size: 15px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    resize: vertical;
+    box-sizing: border-box;
+    font-family: inherit;
+  }
+  textarea:focus, select:focus {
+    outline: none;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+  }
+  .row {
+    display: flex;
+    gap: 16px;
+    align-items: flex-end;
+    margin-top: 16px;
+  }
+  .mode-field {
+    flex: 0 0 160px;
+  }
+  select {
+    width: 100%;
+    padding: 10px;
+    font-size: 14px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #fff;
+    color: #1a1a1a;
+  }
+  button {
+    flex: 1;
+    padding: 11px 20px;
+    font-size: 15px;
+    font-weight: 600;
+    color: #fff;
+    background: #2563eb;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  button:hover:not(:disabled) {
+    background: #1d4ed8;
+  }
+  button:disabled {
+    background: #9ca3af;
+    cursor: not-allowed;
+  }
+  .result {
+    margin-top: 24px;
+    padding: 16px;
+    border-radius: 8px;
+    font-size: 15px;
+    line-height: 1.5;
+    display: none;
+  }
+  .result.visible {
+    display: block;
+  }
+  .result.loading,
+  .result.error {
+    white-space: pre-wrap;
+  }
+  .result.answer > *:first-child {
+    margin-top: 0;
+  }
+  .result.answer > *:last-child {
+    margin-bottom: 0;
+  }
+  .result.answer h1,
+  .result.answer h2,
+  .result.answer h3 {
+    margin: 16px 0 8px;
+    line-height: 1.3;
+  }
+  .result.answer h1 { font-size: 18px; }
+  .result.answer h2 { font-size: 16px; }
+  .result.answer h3 { font-size: 15px; }
+  .result.answer p {
+    margin: 0 0 10px;
+  }
+  .result.answer ul,
+  .result.answer ol {
+    margin: 0 0 10px;
+    padding-left: 22px;
+  }
+  .result.answer li {
+    margin-bottom: 4px;
+  }
+  .result.answer strong {
+    font-weight: 700;
+  }
+  .result.answer {
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    color: #14532d;
+  }
+  .result.error {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    color: #991b1b;
+  }
+  .result.loading {
+    background: #f3f4f6;
+    border: 1px solid #e5e7eb;
+    color: #4b5563;
+  }
+  .result.question {
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    color: #1e3a8a;
+    font-weight: 600;
+  }
+  #messages {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    min-height: 0;
+  }
+  #query-form {
+    flex: 0 0 auto;
+  }
+  .history-actions {
+    margin-bottom: 16px;
+    text-align: right;
+    flex: 0 0 auto;
+  }
+  .card.query-mode {
+    height: auto;
+  }
+  .card.query-mode #query-form {
+    order: 1;
+  }
+  .card.query-mode #messages {
+    order: 2;
+    flex: 0 0 auto;
+    overflow: visible;
+  }
+  .card.query-mode .history-actions {
+    order: 3;
+  }
+  .clear-btn {
+    background: none;
+    border: none;
+    color: #6b7280;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 4px 0;
+    flex: none;
+  }
+  .clear-btn:hover {
+    color: #374151;
+    background: none;
+  }
+  .mode-toggle {
+    display: flex;
+    gap: 0;
+    margin-bottom: 20px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .mode-toggle button {
+    flex: 1;
+    padding: 9px 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: #374151;
+    background: #fff;
+    border: none;
+    border-radius: 0;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .mode-toggle button:hover:not(.active) {
+    background: #f4f5f7;
+  }
+  .mode-toggle button.active {
+    background: #2563eb;
+    color: #fff;
+  }
+  .mode-toggle button + button {
+    border-left: 1px solid #d1d5db;
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+  <nav class="nav">
+    <a href="/documents.html">Documents</a>
+    <a href="/" class="active">Chat</a>
+  </nav>
+  <div class="card">
+    <h1>Ask your documents</h1>
+    <p class="subtitle">Query your RAG-Anything knowledge base.</p>
+
+    <div class="mode-toggle" id="mode-toggle">
+      <button type="button" id="chat-mode-btn" data-mode="chat">Chat</button>
+      <button type="button" id="query-mode-btn" data-mode="query">Query</button>
+    </div>
+
+    <div id="messages"></div>
+    <div class="history-actions">
+      <button type="button" id="clear-btn" class="clear-btn">Clear history</button>
+    </div>
+
+    <form id="query-form">
+      <label for="query">Query</label>
+      <textarea id="query" name="query" placeholder="What would you like to know?" required></textarea>
+
+      <div class="row">
+        <div class="mode-field">
+          <label for="mode">Mode</label>
+          <select id="mode" name="mode">
+            <option value="hybrid" selected>hybrid</option>
+            <option value="local">local</option>
+            <option value="global">global</option>
+            <option value="naive">naive</option>
+            <option value="mix">mix</option>
+            <option value="bypass">bypass</option>
+          </select>
+        </div>
+        <button type="submit" id="submit-btn">Ask</button>
+      </div>
+    </form>
+  </div>
+  </div>
+
+  <script>
+    const form = document.getElementById("query-form");
+    const submitBtn = document.getElementById("submit-btn");
+    const messagesEl = document.getElementById("messages");
+    const clearBtn = document.getElementById("clear-btn");
+    const modeToggle = document.getElementById("mode-toggle");
+    const modeButtons = modeToggle.querySelectorAll("button");
+    const card = document.querySelector(".card");
+
+    const ACTIVE_MODE_KEY = "ragActiveMode";
+
+    function storageKeyForMode(viewMode) {
+      return `ragMessages_${viewMode}`;
+    }
+
+    function loadMessages(viewMode) {
+      try {
+        return JSON.parse(sessionStorage.getItem(storageKeyForMode(viewMode))) || [];
+      } catch {
+        return [];
+      }
+    }
+
+    function saveMessages(viewMode, turnsToSave) {
+      sessionStorage.setItem(storageKeyForMode(viewMode), JSON.stringify(turnsToSave));
+    }
+
+    let currentMode = sessionStorage.getItem(ACTIVE_MODE_KEY) || "chat";
+    let turns = loadMessages(currentMode);
+
+    // Rolling chat-history summary: only meaningful for "chat" mode. Keeps a
+    // verbatim window of recent turns and folds anything older into a single
+    // running summary, so conversation context sent to the model stays
+    // bounded no matter how long the chat gets. The verbatim window scales
+    // with conversation length: short chats stay fully verbatim, and only
+    // once a chat grows past FULL_VERBATIM_TURNS does the window shrink,
+    // bottoming out at MIN_HISTORY_WINDOW for long chats.
+    const FULL_VERBATIM_TURNS = 5;
+    const MIN_HISTORY_WINDOW = 3;
+
+    function getHistoryWindow(totalTurns) {
+      if (totalTurns <= FULL_VERBATIM_TURNS) return totalTurns;
+      return Math.max(
+        MIN_HISTORY_WINDOW,
+        Math.round((FULL_VERBATIM_TURNS * FULL_VERBATIM_TURNS) / totalTurns)
+      );
+    }
+
+    let chatSummary = sessionStorage.getItem("ragChatSummary") || "";
+    let chatSummarizedCount = parseInt(sessionStorage.getItem("ragChatSummarizedCount"), 10) || 0;
+
+    function saveChatSummaryState() {
+      sessionStorage.setItem("ragChatSummary", chatSummary);
+      sessionStorage.setItem("ragChatSummarizedCount", String(chatSummarizedCount));
+    }
+
+    async function condenseAgedOutTurns() {
+      while (turns.length - chatSummarizedCount > getHistoryWindow(turns.length)) {
+        const oldestUnsummarized = turns[turns.length - chatSummarizedCount - 1];
+        try {
+          const response = await fetch("/query/condense", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              summary: chatSummary,
+              turns: [{ query: oldestUnsummarized.query, answer: oldestUnsummarized.text }],
+            }),
+          });
+          if (!response.ok) break;
+          const data = await response.json();
+          chatSummary = data.summary;
+          chatSummarizedCount += 1;
+          saveChatSummaryState();
+        } catch {
+          break;
+        }
+      }
+    }
+
+    function buildConversationHistory() {
+      const history = [];
+      if (chatSummary) {
+        history.push({ role: "user", content: `Earlier conversation summary: ${chatSummary}` });
+      }
+      const recentTurns = turns.slice(0, turns.length - chatSummarizedCount).reverse();
+      for (const turn of recentTurns) {
+        history.push({ role: "user", content: turn.query });
+        history.push({ role: "assistant", content: turn.text });
+      }
+      return history;
+    }
+
+    function setActiveMode(viewMode) {
+      currentMode = viewMode;
+      sessionStorage.setItem(ACTIVE_MODE_KEY, viewMode);
+      turns = loadMessages(viewMode);
+      card.classList.toggle("query-mode", viewMode === "query");
+      for (const btn of modeButtons) {
+        btn.classList.toggle("active", btn.dataset.mode === viewMode);
+      }
+      renderMessages();
+    }
+
+    modeToggle.addEventListener("click", (event) => {
+      const btn = event.target.closest("button[data-mode]");
+      if (btn) setActiveMode(btn.dataset.mode);
+    });
+
+    function escapeHtml(str) {
+      return str
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    function renderInline(text) {
+      return escapeHtml(text).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    }
+
+    function renderMarkdown(markdown) {
+      const lines = markdown.split("\n");
+      const html = [];
+      let listType = null; // "ul" | "ol" | null
+      let paragraph = [];
+
+      const flushParagraph = () => {
+        if (paragraph.length) {
+          html.push(`<p>${paragraph.join(" ")}</p>`);
+          paragraph = [];
+        }
+      };
+      const closeList = () => {
+        if (listType) {
+          html.push(`</${listType}>`);
+          listType = null;
+        }
+      };
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+
+        if (!line) {
+          flushParagraph();
+          closeList();
+          continue;
+        }
+
+        const headingMatch = line.match(/^(#{1,3})\s+(.*)/);
+        if (headingMatch) {
+          flushParagraph();
+          closeList();
+          const level = headingMatch[1].length;
+          html.push(`<h${level}>${renderInline(headingMatch[2])}</h${level}>`);
+          continue;
+        }
+
+        const bulletMatch = line.match(/^[*-]\s+(.*)/);
+        const numberedMatch = line.match(/^\d+[.)]\s+(.*)/);
+        if (bulletMatch || numberedMatch) {
+          flushParagraph();
+          const wantedType = bulletMatch ? "ul" : "ol";
+          if (listType !== wantedType) {
+            closeList();
+            html.push(`<${wantedType}>`);
+            listType = wantedType;
+          }
+          html.push(`<li>${renderInline((bulletMatch || numberedMatch)[1])}</li>`);
+          continue;
+        }
+
+        closeList();
+        paragraph.push(renderInline(line));
+      }
+
+      flushParagraph();
+      closeList();
+      return html.join("");
+    }
+
+    function scrollMessagesToBottom() {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function renderMessages() {
+      messagesEl.innerHTML = "";
+      for (const turn of [...turns].reverse()) {
+        const questionBubble = document.createElement("div");
+        questionBubble.className = "result visible question";
+        questionBubble.textContent = turn.query;
+        messagesEl.appendChild(questionBubble);
+
+        const responseBubble = document.createElement("div");
+        responseBubble.className = `result visible ${turn.kind}`;
+        if (turn.kind === "answer") {
+          responseBubble.innerHTML = renderMarkdown(turn.text);
+        } else {
+          responseBubble.textContent = turn.text;
+        }
+        messagesEl.appendChild(responseBubble);
+      }
+      scrollMessagesToBottom();
+    }
+
+    card.classList.toggle("query-mode", currentMode === "query");
+    for (const btn of modeButtons) {
+      btn.classList.toggle("active", btn.dataset.mode === currentMode);
+    }
+    renderMessages();
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      const query = document.getElementById("query").value.trim();
+      const mode = document.getElementById("mode").value;
+      if (!query) return;
+
+      submitBtn.disabled = true;
+      const conversationHistory = currentMode === "chat" ? buildConversationHistory() : [];
+      const turn = { query, kind: "loading", text: "Thinking…" };
+      if (currentMode === "query") {
+        turns = [turn];
+      } else {
+        turns.unshift(turn);
+      }
+      renderMessages();
+      saveMessages(currentMode, turns);
+
+      try {
+        const response = await fetch("/query/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query, mode, conversation_history: conversationHistory }),
+        });
+
+        if (!response.ok) {
+          // Errors raised before streaming starts (e.g. init failures) come
+          // back as a normal JSON error body, same shape as /query's.
+          let detail = `Request failed (${response.status})`;
+          try {
+            const data = await response.json();
+            detail = data.detail || detail;
+          } catch (_) {
+            // Body wasn't JSON -- keep the generic message.
+          }
+          throw new Error(detail);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let accumulated = "";
+        let streamDone = false;
+
+        while (!streamDone) {
+          const { done, value } = await reader.read();
+          streamDone = done;
+          if (value) {
+            accumulated += decoder.decode(value, { stream: true });
+            turn.kind = "answer";
+            turn.text = accumulated;
+            renderMessages();
+          }
+        }
+        accumulated += decoder.decode();
+        turn.kind = "answer";
+        turn.text = accumulated;
+        renderMessages();
+        saveMessages(currentMode, turns);
+        if (currentMode === "chat") await condenseAgedOutTurns();
+      } catch (err) {
+        turn.kind = "error";
+        turn.text = err.message || "Something went wrong.";
+        renderMessages();
+        saveMessages(currentMode, turns);
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    clearBtn.addEventListener("click", () => {
+      turns = [];
+      sessionStorage.removeItem(storageKeyForMode(currentMode));
+      if (currentMode === "chat") {
+        chatSummary = "";
+        chatSummarizedCount = 0;
+        saveChatSummaryState();
+      }
+      renderMessages();
+    });
+  </script>
+</body>
+</html>

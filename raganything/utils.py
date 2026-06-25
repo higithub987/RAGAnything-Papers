@@ -8,9 +8,26 @@ from __future__ import annotations
 
 import base64
 import inspect
+import re
 from typing import Dict, List, Any, Tuple
 from pathlib import Path
 from lightrag.utils import logger
+
+
+def strip_thinking_tags(text: str) -> str:
+    """Remove <think>/<thinking> tags produced by reasoning models.
+
+    Models such as DeepSeek-R1 and Qwen2.5-think wrap their internal
+    chain-of-thought in ``<think>…</think>`` or ``<thinking>…</thinking>``
+    blocks before emitting the final answer. Callers that surface or store
+    model output to end users/the knowledge graph want only the final
+    answer, not the reasoning preamble.
+    """
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(
+        r"<thinking>.*?</thinking>", "", cleaned, flags=re.DOTALL | re.IGNORECASE
+    )
+    return cleaned.strip()
 
 
 def normalize_caption_list(value: Any) -> List[str]:

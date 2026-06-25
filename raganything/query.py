@@ -4,6 +4,7 @@ Query functionality for RAGAnything
 Contains all query-related methods for both text and multimodal queries
 """
 
+import asyncio
 import json
 import hashlib
 import re
@@ -98,6 +99,71 @@ class QueryMixin:
         cache_hash = hashlib.md5(cache_str.encode()).hexdigest()
 
         return f"multimodal_query:{cache_hash}"
+
+    def _has_llm_cache(self) -> bool:
+        """Check whether self.lightrag has an attached LLM response cache."""
+        return bool(
+            hasattr(self, "lightrag")
+            and self.lightrag
+            and hasattr(self.lightrag, "llm_response_cache")
+            and self.lightrag.llm_response_cache
+        )
+
+    def _has_active_llm_cache(self) -> bool:
+        """Check whether self.lightrag has a usable, enabled LLM response cache."""
+        return self._has_llm_cache() and self.lightrag.llm_response_cache.global_config.get(
+            "enable_llm_cache", True
+        )
+
+    async def _get_cached_multimodal_result(self, cache_key: str, is_streaming: bool):
+        """Look up a cached multimodal query result, or None on miss/disabled/streaming."""
+        if is_streaming or not self._has_active_llm_cache():
+            return None
+        try:
+            cached_result = await self.lightrag.llm_response_cache.get_by_id(cache_key)
+            if cached_result and isinstance(cached_result, dict):
+                result_content = cached_result.get("return")
+                if result_content:
+                    self.logger.info(f"Multimodal query cache hit: {cache_key[:16]}...")
+                    return result_content
+        except Exception as e:
+            self.logger.debug(f"Error accessing multimodal query cache: {e}")
+        return None
+
+    async def _save_multimodal_result_to_cache(
+        self,
+        cache_key: str,
+        result: str,
+        query: str,
+        multimodal_content: List[Dict[str, Any]],
+        mode: str,
+        is_streaming: bool,
+    ) -> None:
+        """Save a multimodal query result to cache and persist it, unless streaming."""
+        if is_streaming:
+            return
+
+        if self._has_active_llm_cache():
+            try:
+                cache_entry = {
+                    "return": result,
+                    "cache_type": "multimodal_query",
+                    "original_query": query,
+                    "multimodal_content_count": len(multimodal_content),
+                    "mode": mode,
+                }
+                await self.lightrag.llm_response_cache.upsert({cache_key: cache_entry})
+                self.logger.info(
+                    f"Saved multimodal query result to cache: {cache_key[:16]}..."
+                )
+            except Exception as e:
+                self.logger.debug(f"Error saving multimodal query to cache: {e}")
+
+        if self._has_llm_cache():
+            try:
+                await self.lightrag.llm_response_cache.index_done_callback()
+            except Exception as e:
+                self.logger.debug(f"Error persisting multimodal query cache: {e}")
 
     async def aquery(
         self, query: str, mode: str = "mix", system_prompt: str | None = None, **kwargs
@@ -254,6 +320,13 @@ class QueryMixin:
                 query, mode=mode, system_prompt=system_prompt, **kwargs
             )
 
+        # Streaming responses are AsyncIterators, not plain strings -- caching
+        # them here would store an unconsumed/half-consumed generator instead
+        # of the actual answer text. Skip the whole-result cache entirely when
+        # streaming, mirroring how LightRAG's own kg_query() already skips its
+        # per-prompt cache for streaming responses.
+        is_streaming = bool(kwargs.get("stream"))
+
         # Generate cache key for multimodal query
         cache_key = self._generate_multimodal_cache_key(
             query,
@@ -264,29 +337,9 @@ class QueryMixin:
         )
 
         # Check cache if available and enabled
-        cached_result = None
-        if (
-            hasattr(self, "lightrag")
-            and self.lightrag
-            and hasattr(self.lightrag, "llm_response_cache")
-            and self.lightrag.llm_response_cache
-        ):
-            if self.lightrag.llm_response_cache.global_config.get(
-                "enable_llm_cache", True
-            ):
-                try:
-                    cached_result = await self.lightrag.llm_response_cache.get_by_id(
-                        cache_key
-                    )
-                    if cached_result and isinstance(cached_result, dict):
-                        result_content = cached_result.get("return")
-                        if result_content:
-                            self.logger.info(
-                                f"Multimodal query cache hit: {cache_key[:16]}..."
-                            )
-                            return result_content
-                except Exception as e:
-                    self.logger.debug(f"Error accessing multimodal query cache: {e}")
+        cached_result = await self._get_cached_multimodal_result(cache_key, is_streaming)
+        if cached_result:
+            return cached_result
 
         # Process multimodal content to generate enhanced query text
         enhanced_query = await self._process_multimodal_query_content(
@@ -302,46 +355,10 @@ class QueryMixin:
             enhanced_query, mode=mode, system_prompt=system_prompt, **kwargs
         )
 
-        # Save to cache if available and enabled
-        if (
-            hasattr(self, "lightrag")
-            and self.lightrag
-            and hasattr(self.lightrag, "llm_response_cache")
-            and self.lightrag.llm_response_cache
-        ):
-            if self.lightrag.llm_response_cache.global_config.get(
-                "enable_llm_cache", True
-            ):
-                try:
-                    # Create cache entry for multimodal query
-                    cache_entry = {
-                        "return": result,
-                        "cache_type": "multimodal_query",
-                        "original_query": query,
-                        "multimodal_content_count": len(multimodal_content),
-                        "mode": mode,
-                    }
-
-                    await self.lightrag.llm_response_cache.upsert(
-                        {cache_key: cache_entry}
-                    )
-                    self.logger.info(
-                        f"Saved multimodal query result to cache: {cache_key[:16]}..."
-                    )
-                except Exception as e:
-                    self.logger.debug(f"Error saving multimodal query to cache: {e}")
-
-        # Ensure cache is persisted to disk
-        if (
-            hasattr(self, "lightrag")
-            and self.lightrag
-            and hasattr(self.lightrag, "llm_response_cache")
-            and self.lightrag.llm_response_cache
-        ):
-            try:
-                await self.lightrag.llm_response_cache.index_done_callback()
-            except Exception as e:
-                self.logger.debug(f"Error persisting multimodal query cache: {e}")
+        # Save to cache and persist it (unless streaming)
+        await self._save_multimodal_result_to_cache(
+            cache_key, result, query, multimodal_content, mode, is_streaming
+        )
 
         self.logger.info("Multimodal query completed")
         return result
@@ -389,7 +406,9 @@ class QueryMixin:
 
         # 1. Get original retrieval prompt (without generating final answer)
         query_param = QueryParam(mode=mode, only_need_prompt=True, **kwargs)
-        raw_prompt = await self.lightrag.aquery(query, param=query_param)
+        raw_prompt = await self.lightrag.aquery(
+            query, param=query_param, system_prompt=system_prompt
+        )
 
         self.logger.debug("Retrieved raw prompt from LightRAG")
 
@@ -400,7 +419,15 @@ class QueryMixin:
 
         if not images_found:
             self.logger.info("No valid images found, falling back to normal query")
-            # Fallback to normal query
+            # The only_need_prompt=True call above already did retrieval, keyword
+            # extraction, and context assembly. Reuse that work instead of calling
+            # lightrag.aquery() again, which would redo it just to throw it away.
+            reused_response = await self._generate_from_reused_prompt(
+                raw_prompt, query, query_param
+            )
+            if reused_response is not None:
+                return reused_response
+
             query_param = QueryParam(mode=mode, **kwargs)
             return await self.lightrag.aquery(
                 query, param=query_param, system_prompt=system_prompt
@@ -419,6 +446,50 @@ class QueryMixin:
         self.logger.info("VLM enhanced query completed")
         return result
 
+    async def _generate_from_reused_prompt(
+        self, raw_prompt: str, query: str, query_param: QueryParam
+    ):
+        """
+        Generate a response by reusing a raw retrieval prompt already built by
+        LightRAG's kg_query(), instead of re-running retrieval from scratch.
+
+        LightRAG builds that prompt as "sys_prompt\n\n---User Query---\n\nuser_query"
+        (see lightrag/operate.py), the exact pieces it would otherwise pass as
+        use_model_func(user_query, system_prompt=sys_prompt, ...).
+
+        Returns:
+            The generated response, or None if raw_prompt doesn't contain the
+            expected delimiter (signaling the caller should fall back to a
+            slower but always-correct re-query).
+        """
+        delimiter = "\n\n---User Query---\n\n"
+        if delimiter not in raw_prompt:
+            return None
+
+        sys_prompt, user_query = raw_prompt.split(delimiter, 1)
+        response = await self.llm_model_func(
+            user_query,
+            system_prompt=sys_prompt,
+            history_messages=query_param.conversation_history,
+            enable_cot=True,
+            stream=query_param.stream,
+        )
+        if isinstance(response, str) and len(response) > len(sys_prompt):
+            response = self._strip_prompt_echo(response, sys_prompt, query)
+        return response
+
+    def _strip_prompt_echo(self, text: str, sys_prompt: str, query: str) -> str:
+        """Strip leaked system-prompt/role-name artifacts the model sometimes echoes back."""
+        return (
+            text.replace(sys_prompt, "")
+            .replace("user", "")
+            .replace("model", "")
+            .replace(query, "")
+            .replace("<system>", "")
+            .replace("</system>", "")
+            .strip()
+        )
+
     async def _process_multimodal_query_content(
         self, base_query: str, multimodal_content: List[Dict[str, Any]]
     ) -> str:
@@ -432,39 +503,44 @@ class QueryMixin:
         Returns:
             str: Enhanced query text
         """
-        self.logger.info("Starting multimodal query content processing...")
+        self.logger.info(
+            f"Starting multimodal query content processing for {len(multimodal_content)} item(s)..."
+        )
 
-        enhanced_parts = [f"User query: {base_query}"]
+        semaphore = asyncio.Semaphore(self.config.max_concurrent_query_content)
 
-        for i, content in enumerate(multimodal_content):
+        async def describe_one(i: int, content: Dict[str, Any]) -> str:
             content_type = content.get("type", "unknown")
             self.logger.info(
                 f"Processing {i + 1}/{len(multimodal_content)} multimodal content: {content_type}"
             )
-
             try:
                 # Get appropriate processor
                 processor = get_processor_for_type(self.modal_processors, content_type)
 
                 if processor:
-                    # Generate content description
-                    description = await self._generate_query_content_description(
-                        processor, content, content_type
-                    )
-                    enhanced_parts.append(
-                        f"\nRelated {content_type} content: {description}"
-                    )
+                    async with semaphore:
+                        description = await self._generate_query_content_description(
+                            processor, content, content_type
+                        )
+                    return f"\nRelated {content_type} content: {description}"
                 else:
                     # If no appropriate processor, use basic description
                     basic_desc = str(content)[:200]
-                    enhanced_parts.append(
-                        f"\nRelated {content_type} content: {basic_desc}"
-                    )
+                    return f"\nRelated {content_type} content: {basic_desc}"
 
             except Exception as e:
                 self.logger.error(f"Error processing multimodal content: {str(e)}")
-                # Continue processing other content
-                continue
+                return None
+
+        tasks = [
+            asyncio.create_task(describe_one(i, content))
+            for i, content in enumerate(multimodal_content)
+        ]
+        results = await asyncio.gather(*tasks)
+
+        enhanced_parts = [f"User query: {base_query}"]
+        enhanced_parts.extend(part for part in results if part is not None)
 
         enhanced_query = "\n".join(enhanced_parts)
         enhanced_query += PROMPTS["QUERY_ENHANCEMENT_SUFFIX"]
@@ -586,6 +662,60 @@ class QueryMixin:
 
         return description
 
+    def _is_image_path_safe(
+        self, image_path: str, extra_safe_dirs: List[str] = None
+    ) -> bool:
+        """
+        Check that image_path is a valid image file located inside an allowed
+        directory (the workspace, output dir, cwd, or an explicit extra safe dir).
+
+        This guards against indirect prompt injection: retrieved context could
+        contain a maliciously crafted "Image Path:" string pointing outside the
+        workspace, which would otherwise let an attacker make the VLM read and
+        encode an arbitrary file on disk.
+        """
+        if not validate_image_file(image_path):
+            return False
+
+        abs_image_path = Path(image_path).resolve()
+
+        # Check if it's in the current working directory or subdirectories
+        try:
+            is_in_safe_dir = abs_image_path.is_relative_to(Path.cwd())
+        except ValueError:
+            is_in_safe_dir = False
+
+        # If a config is available, check against working_dir and parser_output_dir
+        if not is_in_safe_dir and hasattr(self, "config") and self.config:
+            try:
+                is_in_working = abs_image_path.is_relative_to(
+                    Path(self.config.working_dir).resolve()
+                )
+                is_in_output = abs_image_path.is_relative_to(
+                    Path(self.config.parser_output_dir).resolve()
+                )
+                is_in_safe_dir = is_in_working or is_in_output
+            except Exception:
+                pass
+
+        # Check against extra safe directories if provided
+        if not is_in_safe_dir and extra_safe_dirs:
+            for safe_dir in extra_safe_dirs:
+                try:
+                    if abs_image_path.is_relative_to(Path(safe_dir).resolve()):
+                        is_in_safe_dir = True
+                        break
+                except Exception:
+                    continue
+
+        if not is_in_safe_dir:
+            self.logger.warning(
+                f"Blocking image path outside safe directories: {image_path}"
+            )
+            return False
+
+        return True
+
     async def _process_image_paths_for_vlm(
         self, prompt: str, extra_safe_dirs: List[str] = None
     ) -> tuple[str, int]:
@@ -626,50 +756,7 @@ class QueryMixin:
                 self.logger.warning(f"Invalid image path format: {image_path}")
                 return match.group(0)  # Keep original
 
-            # Use utility function to validate image file
-            is_valid = validate_image_file(image_path)
-
-            # Security check: only allow images from the workspace or output directories
-            # to prevent indirect prompt injection from reading arbitrary system files.
-            if is_valid:
-                abs_image_path = Path(image_path).resolve()
-                # Check if it's in the current working directory or subdirectories
-                try:
-                    is_in_cwd = abs_image_path.is_relative_to(Path.cwd())
-                except ValueError:
-                    is_in_cwd = False
-
-                # If a config is available, check against working_dir and parser_output_dir
-                is_in_safe_dir = is_in_cwd
-                if hasattr(self, "config") and self.config:
-                    try:
-                        is_in_working = abs_image_path.is_relative_to(
-                            Path(self.config.working_dir).resolve()
-                        )
-                        is_in_output = abs_image_path.is_relative_to(
-                            Path(self.config.parser_output_dir).resolve()
-                        )
-                        is_in_safe_dir = is_in_safe_dir or is_in_working or is_in_output
-                    except Exception:
-                        pass
-
-                # Check against extra safe directories if provided
-                if not is_in_safe_dir and extra_safe_dirs:
-                    for safe_dir in extra_safe_dirs:
-                        try:
-                            if abs_image_path.is_relative_to(Path(safe_dir).resolve()):
-                                is_in_safe_dir = True
-                                break
-                        except Exception:
-                            continue
-
-                if not is_in_safe_dir:
-                    self.logger.warning(
-                        f"Blocking image path outside safe directories: {image_path}"
-                    )
-                    is_valid = False
-
-            if not is_valid:
+            if not self._is_image_path_safe(image_path, extra_safe_dirs):
                 self.logger.warning(
                     f"Image validation failed or path unsafe for: {image_path}"
                 )

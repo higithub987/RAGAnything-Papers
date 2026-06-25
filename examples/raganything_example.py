@@ -21,7 +21,6 @@ from pathlib import Path
 import sys
 
 sys.path.append(str(Path(__file__).parent.parent))
-
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
 from raganything import RAGAnything, RAGAnythingConfig
@@ -94,6 +93,7 @@ async def process_with_rag(
     base_url: str = None,
     working_dir: str = None,
     parser: str = None,
+    backend: str = None,
 ):
     """
     Process document with RAGAnything
@@ -117,12 +117,12 @@ async def process_with_rag(
         )
 
         # Define LLM model function
-        llm_model = os.getenv("LLM_MODEL", "gpt-4o-mini")
-        vision_model = os.getenv("VISION_MODEL", "gpt-4o")
+        llm_model = os.getenv("LLM_MODEL", "qwen3.7-plus")
+        vision_model = os.getenv("VISION_MODEL", "qwen3.7-plus")
 
         def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
             return openai_complete_if_cache(
-                llm_model,
+                "qwen-plus",
                 prompt,
                 system_prompt=system_prompt,
                 history_messages=history_messages,
@@ -187,8 +187,8 @@ async def process_with_rag(
                 return llm_model_func(prompt, system_prompt, history_messages, **kwargs)
 
         # Define embedding function - using environment variables for configuration
-        embedding_dim = int(os.getenv("EMBEDDING_DIM", "3072"))
-        embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
+        embedding_dim = int(os.getenv("EMBEDDING_DIM", "1024"))
+        embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-v3")
 
         embedding_func = EmbeddingFunc(
             embedding_dim=embedding_dim,
@@ -207,11 +207,17 @@ async def process_with_rag(
             llm_model_func=llm_model_func,
             vision_model_func=vision_model_func,
             embedding_func=embedding_func,
+            lightrag_kwargs={
+                "vector_storage": "MilvusVectorDBStorage",
+            },
         )
 
-        # Process document
+        # Process document (pass backend to MinerU to avoid VLM backends)
         await rag.process_document_complete(
-            file_path=file_path, output_dir=output_dir, parse_method="auto"
+            file_path=file_path,
+            output_dir=output_dir,
+            parse_method="auto",
+            backend=backend,
         )
 
         # Example queries - demonstrating different query approaches
@@ -301,6 +307,14 @@ def main():
             "plugin discovery."
         ),
     )
+    parser.add_argument(
+        "--backend",
+        default=None,
+        help=(
+            "MinerU backend to use (e.g. pipeline, vlm-auto-engine, vlm-http-client). "
+            "Set to 'pipeline' to avoid starting VLM."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -323,6 +337,7 @@ def main():
             args.base_url,
             args.working_dir,
             args.parser,
+            args.backend,
         )
     )
 
