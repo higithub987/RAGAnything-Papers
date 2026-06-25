@@ -112,14 +112,18 @@ async def text_query(request: QueryRequest):
             if session is None:
                 raise HTTPException(status_code=404, detail="Chat session not found")
             await session_store.condense_aged_out_turns(session)
-            kwargs["conversation_history"] = session_store.build_conversation_history(session)
+            kwargs["conversation_history"] = session_store.build_conversation_history(
+                session
+            )
         elif request.conversation_history:
             kwargs["conversation_history"] = request.conversation_history
         answer = await get_rag().aquery(request.query, mode=request.mode, **kwargs)
         clean_answer = strip_thinking_tags(answer)
         if session is not None:
             session_store.add_turn(session, request.query, clean_answer)
-        return QueryResponse(answer=clean_answer, query=request.query, mode=request.mode)
+        return QueryResponse(
+            answer=clean_answer, query=request.query, mode=request.mode
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -174,7 +178,9 @@ async def text_query_stream(request: QueryRequest):
             if session is None:
                 raise HTTPException(status_code=404, detail="Chat session not found")
             await session_store.condense_aged_out_turns(session)
-            kwargs["conversation_history"] = session_store.build_conversation_history(session)
+            kwargs["conversation_history"] = session_store.build_conversation_history(
+                session
+            )
         elif request.conversation_history:
             kwargs["conversation_history"] = request.conversation_history
         result = await get_rag().aquery(

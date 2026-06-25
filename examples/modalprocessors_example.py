@@ -36,7 +36,11 @@ def get_llm_model_func(api_key: str, base_url: str = None):
 
 def get_vision_model_func(api_key: str, base_url: str = None):
     return (
-        lambda prompt, system_prompt=None, history_messages=[], image_data=None, **kwargs: (
+        lambda prompt,
+        system_prompt=None,
+        history_messages=[],
+        image_data=None,
+        **kwargs: (
             openai_complete_if_cache(
                 "gpt-4o",
                 "",
@@ -180,7 +184,10 @@ async def initialize_rag(api_key: str, base_url: str = None):
                 base_url=base_url,
             ),
         ),
-        llm_model_func=lambda prompt, system_prompt=None, history_messages=[], **kwargs: (
+        llm_model_func=lambda prompt,
+        system_prompt=None,
+        history_messages=[],
+        **kwargs: (
             openai_complete_if_cache(
                 "gpt-4o-mini",
                 prompt,

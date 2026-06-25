@@ -59,7 +59,9 @@ def add_turn(session: ChatSession, query: str, answer: str) -> None:
 
 
 async def condense_aged_out_turns(session: ChatSession) -> None:
-    while len(session.turns) - session.summarized_count > _history_window(len(session.turns)):
+    while len(session.turns) - session.summarized_count > _history_window(
+        len(session.turns)
+    ):
         oldest = session.turns[session.summarized_count]
         session.summary = await condense_history(session.summary, [oldest])
         session.summarized_count += 1
@@ -69,7 +71,10 @@ def build_conversation_history(session: ChatSession) -> list[dict[str, str]]:
     history = []
     if session.summary:
         history.append(
-            {"role": "user", "content": f"Earlier conversation summary: {session.summary}"}
+            {
+                "role": "user",
+                "content": f"Earlier conversation summary: {session.summary}",
+            }
         )
     for turn in session.turns[session.summarized_count :]:
         history.append({"role": "user", "content": turn["query"]})
