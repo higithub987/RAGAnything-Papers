@@ -111,8 +111,11 @@ class QueryMixin:
 
     def _has_active_llm_cache(self) -> bool:
         """Check whether self.lightrag has a usable, enabled LLM response cache."""
-        return self._has_llm_cache() and self.lightrag.llm_response_cache.global_config.get(
-            "enable_llm_cache", True
+        return (
+            self._has_llm_cache()
+            and self.lightrag.llm_response_cache.global_config.get(
+                "enable_llm_cache", True
+            )
         )
 
     async def _get_cached_multimodal_result(self, cache_key: str, is_streaming: bool):
@@ -337,7 +340,9 @@ class QueryMixin:
         )
 
         # Check cache if available and enabled
-        cached_result = await self._get_cached_multimodal_result(cache_key, is_streaming)
+        cached_result = await self._get_cached_multimodal_result(
+            cache_key, is_streaming
+        )
         if cached_result:
             return cached_result
 

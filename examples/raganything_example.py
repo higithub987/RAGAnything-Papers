@@ -117,7 +117,6 @@ async def process_with_rag(
         )
 
         # Define LLM model function
-        llm_model = os.getenv("LLM_MODEL", "qwen3.7-plus")
         vision_model = os.getenv("VISION_MODEL", "qwen3.7-plus")
 
         def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):

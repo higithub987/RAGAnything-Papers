@@ -39,7 +39,9 @@ def _complete(model: str, prompt, system_prompt=None, history_messages=None, **k
 
 
 def _build_fast_llm_func():
-    def fast_llm_model_func(prompt, system_prompt=None, history_messages=None, **kwargs):
+    def fast_llm_model_func(
+        prompt, system_prompt=None, history_messages=None, **kwargs
+    ):
         return _complete(
             settings.fast_llm_model,
             prompt,
@@ -47,6 +49,7 @@ def _build_fast_llm_func():
             history_messages=history_messages,
             **kwargs,
         )
+
     return fast_llm_model_func
 
 
@@ -70,12 +73,18 @@ def _build_llm_func(fast_llm_func):
             history_messages=history_messages,
             **kwargs,
         )
+
     return llm_model_func
 
 
 def _build_vision_func(llm_model_func):
     def vision_model_func(
-        prompt, system_prompt=None, history_messages=None, image_data=None, messages=None, **kwargs
+        prompt,
+        system_prompt=None,
+        history_messages=None,
+        image_data=None,
+        messages=None,
+        **kwargs,
     ):
         if messages:
             return _complete(
@@ -88,7 +97,10 @@ def _build_vision_func(llm_model_func):
             messages = []
             if system_prompt:
                 messages.append(
-                    {"role": "system", "content": [{"type": "text", "text": system_prompt}]}
+                    {
+                        "role": "system",
+                        "content": [{"type": "text", "text": system_prompt}],
+                    }
                 )
             messages.append(
                 {
@@ -97,7 +109,9 @@ def _build_vision_func(llm_model_func):
                         {"type": "text", "text": prompt},
                         {
                             "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{image_data}"},
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_data}"
+                            },
                         },
                     ],
                 }
@@ -109,6 +123,7 @@ def _build_vision_func(llm_model_func):
                 **kwargs,
             )
         return llm_model_func(prompt, system_prompt, history_messages, **kwargs)
+
     return vision_model_func
 
 
@@ -148,7 +163,9 @@ def initialize_rag() -> RAGAnything:
 
 def get_rag() -> RAGAnything:
     if _rag is None:
-        raise RuntimeError("RAGAnything not initialized — call initialize_rag() at startup")
+        raise RuntimeError(
+            "RAGAnything not initialized — call initialize_rag() at startup"
+        )
     return _rag
 
 
@@ -181,7 +198,7 @@ _STATUS_MAP: dict[str, TaskStatus] = {
     "pending": TaskStatus.PROCESSING,
     "processing": TaskStatus.PROCESSING,
     "preprocessed": TaskStatus.PROCESSING,
-    "handling": TaskStatus.PROCESSING,   # legacy RAGAnything batch status
+    "handling": TaskStatus.PROCESSING,  # legacy RAGAnything batch status
     "processed": TaskStatus.COMPLETED,
     "failed": TaskStatus.FAILED,
 }
@@ -198,14 +215,27 @@ def load_existing_documents() -> None:
     for doc_id, entry in raw.items():
         raw_status = entry.get("status", "")
         if raw_status not in _STATUS_MAP:
-            _log.warning("Unknown doc status %r for %s — defaulting to FAILED", raw_status, doc_id)
+            _log.warning(
+                "Unknown doc status %r for %s — defaulting to FAILED",
+                raw_status,
+                doc_id,
+            )
         status = _STATUS_MAP.get(raw_status, TaskStatus.FAILED)
-        created_at = datetime.fromisoformat(entry["created_at"]).replace(tzinfo=timezone.utc) \
-            if entry.get("created_at") else datetime.now(timezone.utc)
-        completed_at = datetime.fromisoformat(entry["updated_at"]).replace(tzinfo=timezone.utc) \
-            if status == TaskStatus.COMPLETED and entry.get("updated_at") else None
-        error = "Processing was interrupted before completion. Re-upload to reprocess." \
-            if raw_status == "handling" else entry.get("error_msg") or None
+        created_at = (
+            datetime.fromisoformat(entry["created_at"]).replace(tzinfo=timezone.utc)
+            if entry.get("created_at")
+            else datetime.now(timezone.utc)
+        )
+        completed_at = (
+            datetime.fromisoformat(entry["updated_at"]).replace(tzinfo=timezone.utc)
+            if status == TaskStatus.COMPLETED and entry.get("updated_at")
+            else None
+        )
+        error = (
+            "Processing was interrupted before completion. Re-upload to reprocess."
+            if raw_status == "handling"
+            else entry.get("error_msg") or None
+        )
         file_name = doc_names.get(doc_id) or Path(entry.get("file_path", doc_id)).name
         import_existing(
             task_id=doc_id,

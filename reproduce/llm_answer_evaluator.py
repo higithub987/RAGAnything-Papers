@@ -1096,7 +1096,7 @@ Respond with a JSON object:
 - Successful evaluations: {len(successful_evaluations)}
 - Failed evaluations: {total_evaluations - len(successful_evaluations)}
 - Total elapsed time: {total_time:.2f} seconds
-- Average time per evaluation: {total_time/total_evaluations:.2f} seconds
+- Average time per evaluation: {total_time / total_evaluations:.2f} seconds
 
 ## Evaluation Configuration
 - Evaluation model: gpt-4o-mini
@@ -1382,9 +1382,9 @@ Accuracy performance by document:
         report += f"""
 
 ## Output Files
-- Detailed evaluation results: {os.path.join(self.config.output_dir, 'llm_evaluation_results.json')}
-- Evaluation summary: {os.path.join(self.config.output_dir, 'llm_evaluation_summary.csv')}
-- Evaluation log: {os.path.join(self.config.output_dir, 'llm_evaluation.log')}
+- Detailed evaluation results: {os.path.join(self.config.output_dir, "llm_evaluation_results.json")}
+- Evaluation summary: {os.path.join(self.config.output_dir, "llm_evaluation_summary.csv")}
+- Evaluation log: {os.path.join(self.config.output_dir, "llm_evaluation.log")}
 """
 
         # Save the report.

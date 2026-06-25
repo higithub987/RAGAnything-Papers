@@ -99,7 +99,9 @@ async def main() -> None:
     print("\n[2/3] Parsing knowledge graph...")
     entities, relationships = parse_graphml()
 
-    print(f"\n[3/3] Indexing {len(entities)} entities and {len(relationships)} relationships...")
+    print(
+        f"\n[3/3] Indexing {len(entities)} entities and {len(relationships)} relationships..."
+    )
     await asyncio.gather(
         upsert_batched(lg.entities_vdb, entities, "entities"),
         upsert_batched(lg.relationships_vdb, relationships, "relationships"),

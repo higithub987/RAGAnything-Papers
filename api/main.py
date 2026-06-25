@@ -4,7 +4,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .rag_manager import ensure_rag_ready, get_rag, initialize_rag, load_existing_documents
+from .rag_manager import (
+    ensure_rag_ready,
+    get_rag,
+    initialize_rag,
+    load_existing_documents,
+)
 from .routes.documents import router as documents_router
 from .routes.query import router as query_router
 

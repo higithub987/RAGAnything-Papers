@@ -55,7 +55,11 @@ async def _strip_thinking_stream(chunks):
                     continue
                 # Still inside the thinking block: everything so far is
                 # discardable except a tail that might be a split close tag.
-                buffer = buffer[-_MAX_TAG_HOLDBACK:] if len(buffer) > _MAX_TAG_HOLDBACK else buffer
+                buffer = (
+                    buffer[-_MAX_TAG_HOLDBACK:]
+                    if len(buffer) > _MAX_TAG_HOLDBACK
+                    else buffer
+                )
                 break
 
     if not in_think and buffer:

@@ -133,7 +133,7 @@ class VLLMRAGIntegration:
             print("📊 Available models:")
             for i, model in enumerate(models.data[:5]):
                 marker = "🎯" if model.id == self.model_name else "  "
-                print(f"{marker} {i+1}. {model.id}")
+                print(f"{marker} {i + 1}. {model.id}")
 
             if len(models.data) > 5:
                 print(f"  ... and {len(models.data) - 5} more models")

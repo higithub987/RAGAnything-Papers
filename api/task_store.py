@@ -51,9 +51,14 @@ def delete_task(task_id: str) -> bool:
     return False
 
 
-def import_existing(task_id: str, file_name: str, status: TaskStatus,
-                    created_at: datetime, completed_at: Optional[datetime],
-                    error: Optional[str] = None) -> None:
+def import_existing(
+    task_id: str,
+    file_name: str,
+    status: TaskStatus,
+    created_at: datetime,
+    completed_at: Optional[datetime],
+    error: Optional[str] = None,
+) -> None:
     """Sync a document from LightRAG's doc_status into the task store.
 
     `task_id` here is the LightRAG doc_id. Upserts so changes to the backing
