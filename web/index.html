@@ -4,51 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RAG-Anything Query</title>
+<link rel="stylesheet" href="/shared.css">
 <style>
-  :root {
-    color-scheme: light;
-  }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background: #f4f5f7;
-    margin: 0;
-    min-height: 100vh;
-    display: flex;
-    justify-content: center;
-    align-items: stretch;
-    padding: 3vh 3vw;
-    box-sizing: border-box;
-  }
   .page {
-    width: 100%;
     display: flex;
     flex-direction: column;
   }
-  .nav {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 16px;
-  }
-  .nav a {
-    flex: 1;
-    text-align: center;
-    padding: 10px;
-    border-radius: 8px;
-    font-weight: 600;
-    font-size: 14px;
-    color: #374151;
-    text-decoration: none;
-    background: #fff;
-    border: 1px solid #d1d5db;
-    transition: background 0.15s ease;
-  }
-  .nav a:hover:not(.active) {
-    background: #f4f5f7;
-  }
-  .nav a.active {
-    background: #2563eb;
-    color: #fff;
-    border-color: #2563eb;
+  body {
+    align-items: stretch;
   }
   .layout {
     display: flex;
@@ -121,25 +84,10 @@
     color: #374151;
   }
   .card {
-    background: #ffffff;
-    border-radius: 12px;
-    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-    padding: 32px;
-    box-sizing: border-box;
     flex: 1;
     min-width: 0;
     display: flex;
     flex-direction: column;
-  }
-  h1 {
-    font-size: 22px;
-    margin: 0 0 4px;
-    color: #1a1a1a;
-  }
-  p.subtitle {
-    margin: 0 0 24px;
-    color: #6b7280;
-    font-size: 14px;
   }
   label {
     display: block;
@@ -320,7 +268,7 @@
   }
   .mode-toggle button {
     flex: 1;
-    padding: 9px 0;
+    padding: 10px 0;
     font-size: 14px;
     font-weight: 600;
     color: #374151;
@@ -618,6 +566,16 @@
 
     function renderMessages() {
       messagesEl.innerHTML = "";
+      if (!turns.length) {
+        const emptyState = document.createElement("p");
+        emptyState.className = "empty-state";
+        emptyState.textContent =
+          currentMode === "query"
+            ? "No query yet — ask a question to get started."
+            : "No messages yet — ask a question to get started.";
+        messagesEl.appendChild(emptyState);
+        return;
+      }
       for (const turn of [...turns].reverse()) {
         const questionBubble = document.createElement("div");
         questionBubble.className = "result visible question";
