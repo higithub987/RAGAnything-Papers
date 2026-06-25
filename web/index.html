@@ -15,12 +15,14 @@
     min-height: 100vh;
     display: flex;
     justify-content: center;
-    padding: 48px 16px;
+    align-items: stretch;
+    padding: 3vh 3vw;
     box-sizing: border-box;
   }
   .page {
     width: 100%;
-    max-width: 640px;
+    display: flex;
+    flex-direction: column;
   }
   .nav {
     display: flex;
@@ -48,15 +50,84 @@
     color: #fff;
     border-color: #2563eb;
   }
+  .layout {
+    display: flex;
+    gap: 2vw;
+    flex: 1;
+    min-height: 0;
+  }
+  .sidebar {
+    flex: 0 0 22%;
+    min-width: 0;
+    background: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+    padding: 20px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 1vh;
+    overflow-y: auto;
+  }
+  .sidebar > button {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+  .layout.query-mode .sidebar {
+    display: none;
+  }
+  .chat-list {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    overflow-y: auto;
+    min-height: 0;
+  }
+  .chat-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    color: #374151;
+  }
+  .chat-item:hover {
+    background: #f4f5f7;
+  }
+  .chat-item.active {
+    background: #eff6ff;
+    color: #1e3a8a;
+    font-weight: 600;
+  }
+  .chat-item-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chat-item .rename-btn {
+    flex: 0 0 auto;
+    background: none;
+    border: none;
+    padding: 2px 4px;
+    font-size: 12px;
+    color: #6b7280;
+    cursor: pointer;
+  }
+  .chat-item .rename-btn:hover {
+    color: #374151;
+  }
   .card {
     background: #ffffff;
     border-radius: 12px;
     box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
     padding: 32px;
-    width: 100%;
-    max-width: 640px;
     box-sizing: border-box;
-    height: 80vh;
+    flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
   }
@@ -208,6 +279,9 @@
     text-align: right;
     flex: 0 0 auto;
   }
+  .card:not(.query-mode) .history-actions {
+    display: none;
+  }
   .card.query-mode {
     height: auto;
   }
@@ -274,39 +348,45 @@
     <a href="/documents.html">Documents</a>
     <a href="/" class="active">Chat</a>
   </nav>
-  <div class="card">
-    <h1>Ask your documents</h1>
-    <p class="subtitle">Query your RAG-Anything knowledge base.</p>
+  <div class="layout" id="layout">
+    <aside class="sidebar" id="sidebar">
+      <button type="button" id="new-chat-btn">+ New Chat</button>
+      <div class="chat-list" id="chat-list"></div>
+    </aside>
+    <div class="card">
+      <h1>Ask your documents</h1>
+      <p class="subtitle">Query your RAG-Anything knowledge base.</p>
 
-    <div class="mode-toggle" id="mode-toggle">
-      <button type="button" id="chat-mode-btn" data-mode="chat">Chat</button>
-      <button type="button" id="query-mode-btn" data-mode="query">Query</button>
-    </div>
-
-    <div id="messages"></div>
-    <div class="history-actions">
-      <button type="button" id="clear-btn" class="clear-btn">Clear history</button>
-    </div>
-
-    <form id="query-form">
-      <label for="query">Query</label>
-      <textarea id="query" name="query" placeholder="What would you like to know?" required></textarea>
-
-      <div class="row">
-        <div class="mode-field">
-          <label for="mode">Mode</label>
-          <select id="mode" name="mode">
-            <option value="hybrid" selected>hybrid</option>
-            <option value="local">local</option>
-            <option value="global">global</option>
-            <option value="naive">naive</option>
-            <option value="mix">mix</option>
-            <option value="bypass">bypass</option>
-          </select>
-        </div>
-        <button type="submit" id="submit-btn">Ask</button>
+      <div class="mode-toggle" id="mode-toggle">
+        <button type="button" id="chat-mode-btn" data-mode="chat">Chat</button>
+        <button type="button" id="query-mode-btn" data-mode="query">Query</button>
       </div>
-    </form>
+
+      <div id="messages"></div>
+      <div class="history-actions">
+        <button type="button" id="clear-btn" class="clear-btn">Clear history</button>
+      </div>
+
+      <form id="query-form">
+        <label for="query">Query</label>
+        <textarea id="query" name="query" placeholder="What would you like to know?" required></textarea>
+
+        <div class="row">
+          <div class="mode-field">
+            <label for="mode">Mode</label>
+            <select id="mode" name="mode">
+              <option value="hybrid" selected>hybrid</option>
+              <option value="local">local</option>
+              <option value="global">global</option>
+              <option value="naive">naive</option>
+              <option value="mix">mix</option>
+              <option value="bypass">bypass</option>
+            </select>
+          </div>
+          <button type="submit" id="submit-btn">Ask</button>
+        </div>
+      </form>
+    </div>
   </div>
   </div>
 
@@ -318,8 +398,12 @@
     const modeToggle = document.getElementById("mode-toggle");
     const modeButtons = modeToggle.querySelectorAll("button");
     const card = document.querySelector(".card");
+    const layout = document.getElementById("layout");
+    const chatList = document.getElementById("chat-list");
+    const newChatBtn = document.getElementById("new-chat-btn");
 
     const ACTIVE_MODE_KEY = "ragActiveMode";
+    const CURRENT_SESSION_KEY = "ragCurrentSessionId";
 
     function storageKeyForMode(viewMode) {
       return `ragMessages_${viewMode}`;
@@ -338,79 +422,118 @@
     }
 
     let currentMode = sessionStorage.getItem(ACTIVE_MODE_KEY) || "chat";
-    let turns = loadMessages(currentMode);
+    let turns = currentMode === "query" ? loadMessages(currentMode) : [];
+    let currentSessionId = sessionStorage.getItem(CURRENT_SESSION_KEY) || null;
 
-    // Rolling chat-history summary: only meaningful for "chat" mode. Keeps a
-    // verbatim window of recent turns and folds anything older into a single
-    // running summary, so conversation context sent to the model stays
-    // bounded no matter how long the chat gets. The verbatim window scales
-    // with conversation length: short chats stay fully verbatim, and only
-    // once a chat grows past FULL_VERBATIM_TURNS does the window shrink,
-    // bottoming out at MIN_HISTORY_WINDOW for long chats.
-    const FULL_VERBATIM_TURNS = 5;
-    const MIN_HISTORY_WINDOW = 3;
-
-    function getHistoryWindow(totalTurns) {
-      if (totalTurns <= FULL_VERBATIM_TURNS) return totalTurns;
-      return Math.max(
-        MIN_HISTORY_WINDOW,
-        Math.round((FULL_VERBATIM_TURNS * FULL_VERBATIM_TURNS) / totalTurns)
-      );
+    // Chat-mode conversations live server-side (api/session_store.py): the
+    // server owns the rolling-history window/summary and naming, and clears
+    // all chats when it restarts. The client just tracks which session is
+    // active and renders whatever turns/title the server reports for it.
+    async function fetchSessions() {
+      const response = await fetch("/sessions");
+      return response.ok ? response.json() : [];
     }
 
-    let chatSummary = sessionStorage.getItem("ragChatSummary") || "";
-    let chatSummarizedCount = parseInt(sessionStorage.getItem("ragChatSummarizedCount"), 10) || 0;
-
-    function saveChatSummaryState() {
-      sessionStorage.setItem("ragChatSummary", chatSummary);
-      sessionStorage.setItem("ragChatSummarizedCount", String(chatSummarizedCount));
+    async function createSession() {
+      const response = await fetch("/sessions", { method: "POST" });
+      const data = await response.json();
+      return data.session_id;
     }
 
-    async function condenseAgedOutTurns() {
-      while (turns.length - chatSummarizedCount > getHistoryWindow(turns.length)) {
-        const oldestUnsummarized = turns[turns.length - chatSummarizedCount - 1];
-        try {
-          const response = await fetch("/query/condense", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              summary: chatSummary,
-              turns: [{ query: oldestUnsummarized.query, answer: oldestUnsummarized.text }],
-            }),
-          });
-          if (!response.ok) break;
-          const data = await response.json();
-          chatSummary = data.summary;
-          chatSummarizedCount += 1;
-          saveChatSummaryState();
-        } catch {
-          break;
-        }
+    async function fetchSessionTurns(sessionId) {
+      const response = await fetch(`/sessions/${sessionId}`);
+      if (!response.ok) return [];
+      const data = await response.json();
+      return data.turns
+        .map((t) => ({ query: t.query, text: t.answer, kind: "answer" }))
+        .reverse();
+    }
+
+    function renderChatList(sessions) {
+      chatList.innerHTML = "";
+      for (const session of sessions) {
+        const item = document.createElement("div");
+        item.className = "chat-item" + (session.session_id === currentSessionId ? " active" : "");
+        item.dataset.sessionId = session.session_id;
+
+        const nameSpan = document.createElement("span");
+        nameSpan.className = "chat-item-name";
+        nameSpan.textContent = session.title;
+        item.appendChild(nameSpan);
+
+        const renameBtn = document.createElement("button");
+        renameBtn.type = "button";
+        renameBtn.className = "rename-btn";
+        renameBtn.textContent = "✎";
+        item.appendChild(renameBtn);
+
+        chatList.appendChild(item);
       }
     }
 
-    function buildConversationHistory() {
-      const history = [];
-      if (chatSummary) {
-        history.push({ role: "user", content: `Earlier conversation summary: ${chatSummary}` });
+    chatList.addEventListener("click", async (event) => {
+      const item = event.target.closest(".chat-item");
+      if (!item) return;
+      const sessionId = item.dataset.sessionId;
+
+      if (event.target.closest(".rename-btn")) {
+        const nameSpan = item.querySelector(".chat-item-name");
+        const newName = window.prompt("Rename chat", nameSpan ? nameSpan.textContent : "");
+        if (newName === null) return;
+        const response = await fetch(`/sessions/${sessionId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: newName.trim() }),
+        });
+        if (response.ok) renderChatList(await fetchSessions());
+        return;
       }
-      const recentTurns = turns.slice(0, turns.length - chatSummarizedCount).reverse();
-      for (const turn of recentTurns) {
-        history.push({ role: "user", content: turn.query });
-        history.push({ role: "assistant", content: turn.text });
+
+      if (sessionId === currentSessionId) return;
+      currentSessionId = sessionId;
+      sessionStorage.setItem(CURRENT_SESSION_KEY, currentSessionId);
+      turns = await fetchSessionTurns(currentSessionId);
+      renderMessages();
+      for (const el of chatList.querySelectorAll(".chat-item")) {
+        el.classList.toggle("active", el.dataset.sessionId === currentSessionId);
       }
-      return history;
+    });
+
+    newChatBtn.addEventListener("click", async () => {
+      currentSessionId = await createSession();
+      sessionStorage.setItem(CURRENT_SESSION_KEY, currentSessionId);
+      turns = [];
+      renderMessages();
+      renderChatList(await fetchSessions());
+    });
+
+    async function initChatMode() {
+      const sessions = await fetchSessions();
+      const exists = sessions.some((s) => s.session_id === currentSessionId);
+      if (!currentSessionId || !exists) {
+        currentSessionId = await createSession();
+        sessionStorage.setItem(CURRENT_SESSION_KEY, currentSessionId);
+        sessions.unshift({ session_id: currentSessionId, title: "New Chat" });
+      }
+      renderChatList(sessions);
+      turns = await fetchSessionTurns(currentSessionId);
+      renderMessages();
     }
 
-    function setActiveMode(viewMode) {
+    async function setActiveMode(viewMode) {
       currentMode = viewMode;
       sessionStorage.setItem(ACTIVE_MODE_KEY, viewMode);
-      turns = loadMessages(viewMode);
       card.classList.toggle("query-mode", viewMode === "query");
+      layout.classList.toggle("query-mode", viewMode === "query");
       for (const btn of modeButtons) {
         btn.classList.toggle("active", btn.dataset.mode === viewMode);
       }
-      renderMessages();
+      if (viewMode === "chat") {
+        await initChatMode();
+      } else {
+        turns = loadMessages(viewMode);
+        renderMessages();
+      }
     }
 
     modeToggle.addEventListener("click", (event) => {
@@ -514,10 +637,15 @@
     }
 
     card.classList.toggle("query-mode", currentMode === "query");
+    layout.classList.toggle("query-mode", currentMode === "query");
     for (const btn of modeButtons) {
       btn.classList.toggle("active", btn.dataset.mode === currentMode);
     }
-    renderMessages();
+    if (currentMode === "chat") {
+      initChatMode();
+    } else {
+      renderMessages();
+    }
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -527,7 +655,6 @@
       if (!query) return;
 
       submitBtn.disabled = true;
-      const conversationHistory = currentMode === "chat" ? buildConversationHistory() : [];
       const turn = { query, kind: "loading", text: "Thinking…" };
       if (currentMode === "query") {
         turns = [turn];
@@ -535,13 +662,17 @@
         turns.unshift(turn);
       }
       renderMessages();
-      saveMessages(currentMode, turns);
+      if (currentMode === "query") saveMessages(currentMode, turns);
 
       try {
+        const requestBody =
+          currentMode === "chat"
+            ? { query, mode, session_id: currentSessionId }
+            : { query, mode, conversation_history: [] };
         const response = await fetch("/query/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query, mode, conversation_history: conversationHistory }),
+          body: JSON.stringify(requestBody),
         });
 
         if (!response.ok) {
@@ -576,13 +707,12 @@
         turn.kind = "answer";
         turn.text = accumulated;
         renderMessages();
-        saveMessages(currentMode, turns);
-        if (currentMode === "chat") await condenseAgedOutTurns();
+        if (currentMode === "query") saveMessages(currentMode, turns);
       } catch (err) {
         turn.kind = "error";
         turn.text = err.message || "Something went wrong.";
         renderMessages();
-        saveMessages(currentMode, turns);
+        if (currentMode === "query") saveMessages(currentMode, turns);
       } finally {
         submitBtn.disabled = false;
       }
@@ -591,11 +721,6 @@
     clearBtn.addEventListener("click", () => {
       turns = [];
       sessionStorage.removeItem(storageKeyForMode(currentMode));
-      if (currentMode === "chat") {
-        chatSummary = "";
-        chatSummarizedCount = 0;
-        saveChatSummaryState();
-      }
       renderMessages();
     });
   </script>

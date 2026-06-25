@@ -12,6 +12,7 @@ from .rag_manager import (
 )
 from .routes.documents import router as documents_router
 from .routes.query import router as query_router
+from .routes.sessions import router as sessions_router
 
 
 @asynccontextmanager
@@ -34,6 +35,7 @@ app.add_middleware(
 
 app.include_router(documents_router)
 app.include_router(query_router)
+app.include_router(sessions_router)
 
 
 @app.get("/health")

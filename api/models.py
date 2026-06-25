@@ -26,6 +26,31 @@ class QueryRequest(BaseModel):
     query: str
     mode: str = "hybrid"
     conversation_history: list[dict[str, str]] = []
+    session_id: Optional[str] = None
+
+
+class ChatSession(BaseModel):
+    session_id: str
+    seq: int
+    name: Optional[str] = None
+    created_at: datetime
+    turns: list[dict[str, str]] = []  # [{"query": ..., "answer": ...}], oldest-first
+    summary: str = ""
+    summarized_count: int = 0
+
+
+class ChatSessionSummary(BaseModel):
+    session_id: str
+    title: str
+    created_at: datetime
+
+
+class ChatSessionDetail(ChatSessionSummary):
+    turns: list[dict[str, str]] = []
+
+
+class RenameSessionRequest(BaseModel):
+    name: str
 
 
 class CondenseHistoryRequest(BaseModel):

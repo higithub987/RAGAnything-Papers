@@ -3,6 +3,7 @@ import re
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from .. import session_store
 from ..models import (
     CondenseHistoryRequest,
     CondenseHistoryResponse,
@@ -103,14 +104,24 @@ def _to_multimodal_content(request: MultimodalQueryRequest) -> list[dict]:
 
 @router.post("", response_model=QueryResponse)
 async def text_query(request: QueryRequest):
+    session = None
     try:
         kwargs = {}
-        if request.conversation_history:
+        if request.session_id:
+            session = session_store.get_session(request.session_id)
+            if session is None:
+                raise HTTPException(status_code=404, detail="Chat session not found")
+            await session_store.condense_aged_out_turns(session)
+            kwargs["conversation_history"] = session_store.build_conversation_history(session)
+        elif request.conversation_history:
             kwargs["conversation_history"] = request.conversation_history
         answer = await get_rag().aquery(request.query, mode=request.mode, **kwargs)
-        return QueryResponse(
-            answer=strip_thinking_tags(answer), query=request.query, mode=request.mode
-        )
+        clean_answer = strip_thinking_tags(answer)
+        if session is not None:
+            session_store.add_turn(session, request.query, clean_answer)
+        return QueryResponse(answer=clean_answer, query=request.query, mode=request.mode)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -140,18 +151,43 @@ async def multimodal_query(request: MultimodalQueryRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+async def _stream_and_record(chunks, session, query: str):
+    """Wrap a chunk stream to record the full answer once it's done.
+
+    The route can't know the final answer text until streaming completes, so
+    the turn is appended to the session only after the last chunk is yielded.
+    """
+    parts = []
+    async for chunk in chunks:
+        parts.append(chunk)
+        yield chunk
+    session_store.add_turn(session, query, "".join(parts))
+
+
 @router.post("/stream")
 async def text_query_stream(request: QueryRequest):
+    session = None
     try:
         kwargs = {}
-        if request.conversation_history:
+        if request.session_id:
+            session = session_store.get_session(request.session_id)
+            if session is None:
+                raise HTTPException(status_code=404, detail="Chat session not found")
+            await session_store.condense_aged_out_turns(session)
+            kwargs["conversation_history"] = session_store.build_conversation_history(session)
+        elif request.conversation_history:
             kwargs["conversation_history"] = request.conversation_history
         result = await get_rag().aquery(
             request.query, mode=request.mode, stream=True, **kwargs
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-    return StreamingResponse(_stream_result(result), media_type="text/plain")
+    stream = _stream_result(result)
+    if session is not None:
+        stream = _stream_and_record(stream, session, request.query)
+    return StreamingResponse(stream, media_type="text/plain")
 
 
 @router.post("/multimodal/stream")
