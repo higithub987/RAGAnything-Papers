@@ -1,3 +1,4 @@
+import logging
 import re
 
 from fastapi import APIRouter, HTTPException
@@ -15,6 +16,7 @@ from ..rag_manager import condense_history, get_rag
 from raganything.utils import strip_thinking_tags
 
 router = APIRouter(prefix="/query", tags=["query"])
+logger = logging.getLogger(__name__)
 
 # Longest opening/closing tag we filter, minus one: how many trailing
 # characters of a not-yet-resolved buffer must be held back in case a tag is
@@ -67,21 +69,44 @@ async def _strip_thinking_stream(chunks):
         yield buffer
 
 
-async def _stream_result(result):
+async def _stream_result(result, retry=None, retries=1):
     """Adapt an aquery()/aquery_with_multimodal() result (str or AsyncIterator[str])
     into a chunked text stream, with reasoning (<think>/<thinking> blocks) filtered
     out. A failure mid-generation can't be turned into an HTTP error status anymore
     (the response has already started), so it's surfaced as a trailing error marker
     instead of left to hang the client.
+
+    If `retry` is given (a zero-arg async callable that redoes the original LLM
+    call) and the stream fails before any content was emitted -- e.g. the remote
+    endpoint drops the connection mid-chunk -- it's safe to silently redo the
+    whole call once, since nothing has reached the client yet. Once any content
+    has been emitted, retrying would duplicate/garble what's already been shown,
+    so failures from then on always fall back to the trailing error marker.
     """
-    try:
-        if isinstance(result, str):
-            yield strip_thinking_tags(result)
-        else:
+    attempt = 0
+    while True:
+        emitted = False
+        try:
+            if isinstance(result, str):
+                yield strip_thinking_tags(result)
+                return
             async for chunk in _strip_thinking_stream(result):
+                emitted = True
                 yield chunk
-    except Exception as exc:
-        yield f"\n[error: {exc}]"
+            return
+        except Exception as exc:
+            if not emitted and retry is not None and attempt < retries:
+                attempt += 1
+                logger.warning(
+                    "Stream failed before any content was sent, retrying: %s", exc
+                )
+                try:
+                    result = await retry()
+                    continue
+                except Exception:
+                    pass
+            yield f"\n[error: {exc}]"
+            return
 
 
 def _multimodal_item_to_dict(item) -> dict:
@@ -183,14 +208,18 @@ async def text_query_stream(request: QueryRequest):
             )
         elif request.conversation_history:
             kwargs["conversation_history"] = request.conversation_history
-        result = await get_rag().aquery(
-            request.query, mode=request.mode, stream=True, **kwargs
-        )
+
+        async def make_result():
+            return await get_rag().aquery(
+                request.query, mode=request.mode, stream=True, **kwargs
+            )
+
+        result = await make_result()
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-    stream = _stream_result(result)
+    stream = _stream_result(result, retry=make_result)
     if session is not None:
         stream = _stream_and_record(stream, session, request.query)
     return StreamingResponse(stream, media_type="text/plain")
@@ -200,12 +229,18 @@ async def text_query_stream(request: QueryRequest):
 async def multimodal_query_stream(request: MultimodalQueryRequest):
     try:
         content = _to_multimodal_content(request)
-        result = await get_rag().aquery_with_multimodal(
-            request.query,
-            multimodal_content=content,
-            mode=request.mode,
-            stream=True,
-        )
+
+        async def make_result():
+            return await get_rag().aquery_with_multimodal(
+                request.query,
+                multimodal_content=content,
+                mode=request.mode,
+                stream=True,
+            )
+
+        result = await make_result()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-    return StreamingResponse(_stream_result(result), media_type="text/plain")
+    return StreamingResponse(
+        _stream_result(result, retry=make_result), media_type="text/plain"
+    )
