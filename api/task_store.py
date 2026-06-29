@@ -12,7 +12,9 @@ _tasks: dict[str, DocumentTask] = {}
 _path_index: dict[str, str] = {}
 
 
-def create_task(task_id: str, file_name: str, on_disk_name: Optional[str] = None) -> DocumentTask:
+def create_task(
+    task_id: str, file_name: str, on_disk_name: Optional[str] = None
+) -> DocumentTask:
     task = DocumentTask(
         task_id=task_id,
         file_name=file_name,

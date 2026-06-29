@@ -47,10 +47,16 @@ class ProgressTrackingCallback(ProcessingCallback):
     def on_parse_start(self, file_path: str, **kwargs) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
-            update_progress(task_id, stage="parsing", progress=0, message="Parsing started")
+            update_progress(
+                task_id, stage="parsing", progress=0, message="Parsing started"
+            )
 
     def on_parse_progress(
-        self, file_path: str, message: str = "", percent: Optional[float] = None, **kwargs
+        self,
+        file_path: str,
+        message: str = "",
+        percent: Optional[float] = None,
+        **kwargs,
     ) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
@@ -59,19 +65,27 @@ class ProgressTrackingCallback(ProcessingCallback):
     def on_parse_complete(self, file_path: str, **kwargs) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
-            update_progress(task_id, stage="parsing", progress=100, message="Parsing complete")
+            update_progress(
+                task_id, stage="parsing", progress=100, message="Parsing complete"
+            )
 
     def on_text_insert_start(self, file_path: str, **kwargs) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
-            update_progress(task_id, stage="text_insert", progress=0, message="Inserting text")
+            update_progress(
+                task_id, stage="text_insert", progress=0, message="Inserting text"
+            )
 
     def on_text_insert_complete(self, file_path: str, **kwargs) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
-            update_progress(task_id, stage="text_insert", progress=100, message="Text inserted")
+            update_progress(
+                task_id, stage="text_insert", progress=100, message="Text inserted"
+            )
 
-    def on_multimodal_start(self, file_path: str, item_count: int = 0, **kwargs) -> None:
+    def on_multimodal_start(
+        self, file_path: str, item_count: int = 0, **kwargs
+    ) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
             update_progress(
@@ -98,17 +112,25 @@ class ProgressTrackingCallback(ProcessingCallback):
     def on_multimodal_complete(self, file_path: str, **kwargs) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
-            update_progress(task_id, stage="multimodal", progress=100, message="Multimodal processing complete")
+            update_progress(
+                task_id,
+                stage="multimodal",
+                progress=100,
+                message="Multimodal processing complete",
+            )
 
     def on_document_complete(self, file_path: str, **kwargs) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
-            update_progress(task_id, stage="complete", progress=100, message="Document complete")
+            update_progress(
+                task_id, stage="complete", progress=100, message="Document complete"
+            )
 
     def on_document_error(self, file_path: str, error=None, **kwargs) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
             update_progress(task_id, stage="failed", message=str(error))
+
 
 _rag: Optional[RAGAnything] = None
 _fast_llm_func = None
@@ -393,7 +415,9 @@ def _resolve_doc_id(file_path: str) -> Optional[str]:
 async def process_document_task(task_id: str, file_path: str) -> None:
     timeout_seconds = _compute_timeout_seconds(file_path)
     update_progress(
-        task_id, stage="queued", message="Waiting for another document to finish processing"
+        task_id,
+        stage="queued",
+        message="Waiting for another document to finish processing",
     )
     async with _parse_semaphore:
         start_processing(task_id)
@@ -423,6 +447,11 @@ async def process_document_task(task_id: str, file_path: str) -> None:
         except Exception as exc:
             fail_task(task_id, str(exc))
         finally:
+            # On a clean failure, process_document_complete now rolls back
+            # doc_id's storage (chunks/entities/vectors/graph + its own
+            # doc_status row) before its exception reaches the `except`
+            # above, so _resolve_doc_id correctly finds nothing here and
+            # set_doc_id is skipped -- this is expected, not a bug.
             doc_id = _resolve_doc_id(file_path)
             if doc_id is not None:
                 set_doc_id(task_id, doc_id)

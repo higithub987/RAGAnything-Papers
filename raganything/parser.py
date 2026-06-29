@@ -942,7 +942,9 @@ class MineruParser(Parser):
                 try:
                     progress_callback(line)
                 except Exception:
-                    cls.logger.debug("progress_callback raised; ignoring", exc_info=True)
+                    cls.logger.debug(
+                        "progress_callback raised; ignoring", exc_info=True
+                    )
 
             # Process output in real time
             start_time = time.monotonic()

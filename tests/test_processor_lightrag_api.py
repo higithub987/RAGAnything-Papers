@@ -33,6 +33,12 @@ class FakeDocStatusStorage:
         self.index_done_calls += 1
 
 
+class FakeDeletionResult:
+    def __init__(self, status="success", message="ok"):
+        self.status = status
+        self.message = message
+
+
 @pytest.mark.asyncio
 async def test_lightrag_api_init_failure_persists_failed_doc_status():
     class DummyProcessor(ProcessorMixin):
@@ -67,3 +73,70 @@ async def test_lightrag_api_init_failure_persists_failed_doc_status():
     assert doc_status["error_msg"] == "missing llm_model_func"
     assert doc_status["file_path"] == "sample.pdf"
     assert processor.lightrag.doc_status.index_done_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_rollback_document_deletes_doc_id_and_marks_pre_id_failed():
+    class DummyProcessor(ProcessorMixin):
+        pass
+
+    processor = DummyProcessor()
+    processor.logger = FakeLogger()
+
+    delete_calls = []
+
+    class FakeLightRAG:
+        def __init__(self):
+            self.doc_status = FakeDocStatusStorage()
+
+        async def adelete_by_doc_id(self, doc_id):
+            delete_calls.append(doc_id)
+            return FakeDeletionResult(status="success")
+
+    processor.lightrag = FakeLightRAG()
+    processor.lightrag.doc_status.records["doc-pre-sample.pdf"] = {
+        "status": DocStatus.HANDLING,
+        "file_path": "sample.pdf",
+    }
+
+    await processor._rollback_document(
+        "doc-real-id",
+        doc_pre_id="doc-pre-sample.pdf",
+        error_msg="insertion exploded",
+    )
+
+    assert delete_calls == ["doc-real-id"]
+    doc_status = processor.lightrag.doc_status.records["doc-pre-sample.pdf"]
+    assert doc_status["status"] == DocStatus.FAILED
+    assert doc_status["error_msg"] == "insertion exploded"
+    assert doc_status["file_path"] == "sample.pdf"
+
+
+@pytest.mark.asyncio
+async def test_rollback_document_skips_delete_when_doc_id_is_none():
+    class DummyProcessor(ProcessorMixin):
+        pass
+
+    processor = DummyProcessor()
+    processor.logger = FakeLogger()
+
+    delete_calls = []
+
+    class FakeLightRAG:
+        def __init__(self):
+            self.doc_status = FakeDocStatusStorage()
+
+        async def adelete_by_doc_id(self, doc_id):
+            delete_calls.append(doc_id)
+            return FakeDeletionResult(status="success")
+
+    processor.lightrag = FakeLightRAG()
+
+    await processor._rollback_document(
+        None, doc_pre_id="doc-pre-sample.pdf", error_msg="parse failed"
+    )
+
+    assert delete_calls == []
+    doc_status = processor.lightrag.doc_status.records["doc-pre-sample.pdf"]
+    assert doc_status["status"] == DocStatus.FAILED
+    assert doc_status["error_msg"] == "parse failed"

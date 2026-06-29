@@ -4,6 +4,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from raganything.reconciliation import reconcile_orphaned_documents
+
 from .rag_manager import (
     ensure_rag_ready,
     get_rag,
@@ -19,6 +21,9 @@ from .routes.sessions import router as sessions_router
 async def lifespan(app: FastAPI):
     initialize_rag()
     await ensure_rag_ready()
+    # Roll back any doc_ids left stuck in HANDLING/PROCESSING/PENDING by a
+    # prior crash before load_existing_documents() imports them as active.
+    await reconcile_orphaned_documents(get_rag().lightrag)
     load_existing_documents()
     yield
     await get_rag().finalize_storages()

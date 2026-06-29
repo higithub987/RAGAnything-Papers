@@ -161,6 +161,67 @@ class ProcessorMixin:
         await self.lightrag.doc_status.index_done_callback()
         return updated_doc_status
 
+    async def _rollback_document(
+        self,
+        doc_id: str | None,
+        *,
+        doc_pre_id: str | None = None,
+        error_msg: str = "",
+    ) -> None:
+        """Best-effort purge of partially-written storage for a failed doc_id.
+
+        Calls LightRAG's adelete_by_doc_id, which removes the doc_id's chunks,
+        entities, relations, vectors, graph nodes/edges, and its own doc_status
+        entry. If doc_pre_id is given (the pre-parse tracking id used by the
+        lightrag_api variant), it is marked FAILED so exactly one terminal
+        status record survives -- doc_id's own row is not recreated here,
+        since recreating it would reintroduce the orphan-looking row this
+        rollback is meant to eliminate. Never raises, so the original
+        exception that triggered rollback is what propagates/gets reported.
+        """
+        lightrag = getattr(self, "lightrag", None)
+        if lightrag is None:
+            return
+
+        if doc_id:
+            try:
+                result = await lightrag.adelete_by_doc_id(doc_id)
+                if result.status not in ("success", "not_found"):
+                    self.logger.error(
+                        f"Rollback of doc_id={doc_id} returned status="
+                        f"{result.status!r}: {result.message}"
+                    )
+                else:
+                    self.logger.info(
+                        f"Rolled back partial data for doc_id={doc_id} "
+                        f"(status={result.status})"
+                    )
+            except Exception as rollback_exc:
+                self.logger.error(
+                    f"adelete_by_doc_id failed for doc_id={doc_id}: {rollback_exc}",
+                    exc_info=True,
+                )
+
+        if doc_pre_id:
+            try:
+                existing = await lightrag.doc_status.get_by_id(doc_pre_id) or {}
+                await lightrag.doc_status.upsert(
+                    {
+                        doc_pre_id: {
+                            **existing,
+                            "status": DocStatus.FAILED,
+                            "error_msg": error_msg,
+                            "updated_at": self._current_doc_status_timestamp(),
+                        }
+                    }
+                )
+                await lightrag.doc_status.index_done_callback()
+            except Exception as status_exc:
+                self.logger.error(
+                    f"Failed to persist FAILED status for doc_pre_id={doc_pre_id}: "
+                    f"{status_exc}"
+                )
+
     async def _get_multimodal_status_record(self, doc_id: str) -> Dict[str, Any] | None:
         """Get compatibility multimodal completion state when doc_status cannot store it."""
         if (
@@ -751,14 +812,14 @@ class ProcessorMixin:
 
         except Exception as e:
             self.logger.error(f"Error in multimodal processing: {e}")
-            # Fallback to individual processing if batch processing fails
+            # Fallback to individual processing if batch processing fails.
+            # _process_multimodal_content_individual raises if any item still
+            # fails, so reaching the line after it means the fallback fully
+            # succeeded -- only then is it safe to mark complete.
             self.logger.warning("Falling back to individual multimodal processing")
             await self._process_multimodal_content_individual(
                 multimodal_items, file_path, doc_id
             )
-
-            # Mark multimodal content as processed even after fallback
-            await self._mark_multimodal_processing_complete(doc_id)
 
     async def _process_multimodal_content_individual(
         self, multimodal_items: List[Dict[str, Any]], file_path: str, doc_id: str
@@ -777,6 +838,7 @@ class ProcessorMixin:
         # Collect all chunk results for batch processing (similar to text content processing)
         all_chunk_results = []
         multimodal_chunk_ids = []
+        failed_items: List[Tuple[int, str, str]] = []
 
         # Get current text chunks count to set proper order indexes for multimodal chunks
         existing_doc_status = await self.lightrag.doc_status.get_by_id(doc_id)
@@ -833,10 +895,14 @@ class ProcessorMixin:
                     self.logger.warning(
                         f"No suitable processor found for {content_type} type content"
                     )
+                    failed_items.append(
+                        (i, content_type, "no suitable processor found")
+                    )
 
             except Exception as e:
                 self.logger.error(f"Error processing multimodal content: {str(e)}")
                 self.logger.debug("Exception details:", exc_info=True)
+                failed_items.append((i, item.get("type", "unknown"), str(e)))
                 continue
 
         # Update doc_status to include multimodal chunks in the standard chunks_list
@@ -913,6 +979,12 @@ class ProcessorMixin:
             await self.lightrag._insert_done()
 
         self.logger.info("Individual multimodal content processing complete")
+
+        if failed_items:
+            raise RuntimeError(
+                f"{len(failed_items)}/{len(multimodal_items)} multimodal items "
+                f"failed during individual processing: {failed_items[:5]}"
+            )
 
         # Mark multimodal content as processed
         await self._mark_multimodal_processing_complete(doc_id)
@@ -1043,17 +1115,27 @@ class ProcessorMixin:
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Filter successful results
+        # Filter successful results, tracking failures so we can refuse to
+        # report this batch as fully processed when some items were dropped
         multimodal_data_list = []
-        for result in results:
+        failed_items: List[Tuple[int, str]] = []
+        for i, result in enumerate(results):
             if isinstance(result, Exception):
                 self.logger.error(f"Task failed: {result}")
+                failed_items.append((i, str(result)))
                 continue
             if result is not None:
                 multimodal_data_list.append(result)
+            else:
+                failed_items.append((i, "no processor or empty result"))
 
         if not multimodal_data_list:
             self.logger.warning("No valid multimodal descriptions generated")
+            if failed_items:
+                raise RuntimeError(
+                    f"All {total_items} multimodal items failed during batch "
+                    f"processing: {failed_items[:5]}"
+                )
             return
 
         self.logger.info(
@@ -1093,6 +1175,12 @@ class ProcessorMixin:
 
         # Stage 7: Update doc_status with integrated chunks_list
         await self._update_doc_status_with_chunks_type_aware(doc_id, chunk_ids)
+
+        if failed_items:
+            raise RuntimeError(
+                f"{len(failed_items)}/{total_items} multimodal items failed "
+                f"during batch processing: {failed_items[:5]}"
+            )
 
     def _convert_to_lightrag_chunks_type_aware(
         self, multimodal_data_list: List[Dict[str, Any]], file_path: str, doc_id: str
@@ -1828,17 +1916,7 @@ class ProcessorMixin:
 
         except Exception as exc:
             if doc_id is not None:
-                try:
-                    await self._upsert_doc_status(
-                        doc_id,
-                        file_name,
-                        status=DocStatus.FAILED,
-                        error_msg=str(exc),
-                    )
-                except Exception as status_exc:
-                    self.logger.debug(
-                        f"Failed to persist doc_status error state for {doc_id}: {status_exc}"
-                    )
+                await self._rollback_document(doc_id, error_msg=str(exc))
             if callback_manager is not None:
                 callback_manager.dispatch(
                     "on_document_error",
@@ -2086,17 +2164,11 @@ class ProcessorMixin:
             self.logger.error(f"Error processing document {file_path}: {str(e)}")
             self.logger.debug("Exception details:", exc_info=True)
 
-            # Update doc status to Failed
-            await self.lightrag.doc_status.upsert(
-                {
-                    doc_pre_id: {
-                        **current_doc_status,
-                        "status": DocStatus.FAILED,
-                        "error_msg": str(e),
-                    }
-                }
+            # Roll back any partial chunks/entities/relations/vectors/graph
+            # data written under doc_id, and mark doc_pre_id FAILED.
+            await self._rollback_document(
+                doc_id if doc_id else None, doc_pre_id=doc_pre_id, error_msg=str(e)
             )
-            await self.lightrag.doc_status.index_done_callback()
 
             # Update pipeline status
             if pipeline_status_lock and pipeline_status:

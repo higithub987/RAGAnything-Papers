@@ -355,3 +355,209 @@ async def test_compatibility_multimodal_cache_prevents_repeat_processing(
     )
 
     assert called["batch"] == 0
+
+
+@pytest.mark.asyncio
+async def test_process_document_complete_rolls_back_on_text_insert_failure(
+    raganything_modules,
+    tmp_path,
+):
+    processor_module = raganything_modules.processor
+
+    class FakeDocStatusStorage:
+        def __init__(self):
+            self.records = {}
+
+        async def get_by_id(self, key):
+            return self.records.get(key)
+
+        async def upsert(self, data):
+            for key, value in data.items():
+                self.records[key] = value
+
+        async def index_done_callback(self):
+            return None
+
+    class FakeDeletionResult:
+        status = "success"
+        message = "ok"
+
+    class FakeLightRAG:
+        def __init__(self):
+            self.doc_status = FakeDocStatusStorage()
+            self.delete_calls = []
+
+        async def ainsert(self, **kwargs):
+            raise RuntimeError("ainsert exploded")
+
+        async def adelete_by_doc_id(self, doc_id):
+            self.delete_calls.append(doc_id)
+            return FakeDeletionResult()
+
+    class DummyProcessor(processor_module.ProcessorMixin):
+        pass
+
+    processor = DummyProcessor()
+    processor.lightrag = FakeLightRAG()
+    processor.multimodal_status_cache = InMemoryJsonStorage()
+    processor.callback_manager = None
+    processor.logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+    )
+    processor.config = types.SimpleNamespace(
+        parser_output_dir=str(tmp_path / "output"),
+        parse_method="auto",
+        display_content_stats=False,
+        use_full_path=False,
+        content_format="default",
+    )
+
+    async def fake_ensure_lightrag_initialized():
+        return {"success": True}
+
+    async def fake_parse_document(
+        file_path, output_dir, parse_method, display_stats, **kwargs
+    ):
+        return (
+            [{"type": "text", "text": "hello from test", "page_idx": 0}],
+            "doc-generated",
+        )
+
+    processor._ensure_lightrag_initialized = fake_ensure_lightrag_initialized
+    processor.parse_document = fake_parse_document
+
+    with pytest.raises(RuntimeError, match="ainsert exploded"):
+        await processor.process_document_complete(
+            file_path=str(tmp_path / "sample.pdf"),
+            doc_id="doc-custom",
+            file_name="sample.pdf",
+        )
+
+    assert processor.lightrag.delete_calls == ["doc-custom"]
+
+
+@pytest.mark.asyncio
+async def test_multimodal_individual_raises_and_skips_complete_on_partial_failure(
+    raganything_modules,
+):
+    processor_module = raganything_modules.processor
+
+    class FakeDocStatusStorage:
+        def __init__(self):
+            self.records = {}
+
+        async def get_by_id(self, key):
+            return self.records.get(key)
+
+        async def upsert(self, data):
+            for key, value in data.items():
+                self.records[key] = value
+
+        async def index_done_callback(self):
+            return None
+
+    class FakeLightRAG:
+        def __init__(self):
+            self.doc_status = FakeDocStatusStorage()
+
+    class GoodProcessor:
+        async def process_multimodal_content(self, **kwargs):
+            return ("caption", {"chunk_id": "chunk-1", "entity_name": "ok"}, [])
+
+    class BadProcessor:
+        async def process_multimodal_content(self, **kwargs):
+            raise RuntimeError("processing exploded")
+
+    class DummyProcessor(processor_module.ProcessorMixin):
+        pass
+
+    processor = DummyProcessor()
+    processor.lightrag = FakeLightRAG()
+    processor.modal_processors = {"image": GoodProcessor(), "table": BadProcessor()}
+    processor.logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+    )
+    processor.config = types.SimpleNamespace(use_full_path=False)
+
+    mark_complete_calls = []
+
+    async def fake_mark_complete(doc_id):
+        mark_complete_calls.append(doc_id)
+
+    processor._mark_multimodal_processing_complete = fake_mark_complete
+
+    with pytest.raises(RuntimeError, match=r"1/2 multimodal items failed"):
+        await processor._process_multimodal_content_individual(
+            [
+                {"type": "image", "page_idx": 0},
+                {"type": "table", "page_idx": 1},
+            ],
+            "doc.pdf",
+            "doc-mixed",
+        )
+
+    assert mark_complete_calls == []
+
+
+@pytest.mark.asyncio
+async def test_multimodal_individual_marks_complete_on_full_success(
+    raganything_modules,
+):
+    processor_module = raganything_modules.processor
+
+    class FakeDocStatusStorage:
+        def __init__(self):
+            self.records = {}
+
+        async def get_by_id(self, key):
+            return self.records.get(key)
+
+        async def upsert(self, data):
+            for key, value in data.items():
+                self.records[key] = value
+
+        async def index_done_callback(self):
+            return None
+
+    class FakeLightRAG:
+        def __init__(self):
+            self.doc_status = FakeDocStatusStorage()
+
+    class GoodProcessor:
+        async def process_multimodal_content(self, **kwargs):
+            return ("caption", {"chunk_id": "chunk-1", "entity_name": "ok"}, [])
+
+    class DummyProcessor(processor_module.ProcessorMixin):
+        pass
+
+    processor = DummyProcessor()
+    processor.lightrag = FakeLightRAG()
+    processor.modal_processors = {"image": GoodProcessor()}
+    processor.logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+    )
+    processor.config = types.SimpleNamespace(use_full_path=False)
+
+    mark_complete_calls = []
+
+    async def fake_mark_complete(doc_id):
+        mark_complete_calls.append(doc_id)
+
+    processor._mark_multimodal_processing_complete = fake_mark_complete
+
+    await processor._process_multimodal_content_individual(
+        [{"type": "image", "page_idx": 0}],
+        "doc.pdf",
+        "doc-good",
+    )
+
+    assert mark_complete_calls == ["doc-good"]

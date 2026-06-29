@@ -211,15 +211,9 @@
     }
 
     function findActiveTasks() {
-      const tasks = [...taskCache.values()];
-      const processing = tasks
-        .filter((t) => t.status === "processing")
+      return [...taskCache.values()]
+        .filter((t) => t.status === "processing" || t.status === "pending")
         .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-      if (processing.length) return processing;
-      const pending = tasks
-        .filter((t) => t.status === "pending")
-        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-      return pending[0] ? [pending[0]] : [];
     }
 
     function renderActivePanel() {
