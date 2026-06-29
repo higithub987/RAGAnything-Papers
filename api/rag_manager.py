@@ -112,9 +112,10 @@ class ProgressTrackingCallback(ProcessingCallback):
 
 _rag: Optional[RAGAnything] = None
 _fast_llm_func = None
-# Only one document parses at a time; asyncio.Lock grants waiters in FIFO
-# order, so queued uploads start in upload order.
-_parse_lock = asyncio.Lock()
+# Limits how many documents parse at once (settings.max_concurrent_documents,
+# default 1). asyncio.Semaphore grants waiters in FIFO order, so queued
+# uploads start in upload order regardless of the limit.
+_parse_semaphore = asyncio.Semaphore(settings.max_concurrent_documents)
 
 
 def _complete(model: str, prompt, system_prompt=None, history_messages=None, **kwargs):
@@ -355,6 +356,21 @@ async def ensure_rag_ready() -> None:
             rag.modal_processors[content_type].modal_caption_func = _fast_llm_func
 
 
+def _compute_timeout_seconds(file_path: str) -> int:
+    """Scale the parse timeout with the uploaded file's size on disk.
+
+    Raw file size is a cheap, dependency-free proxy for parse duration —
+    there's no existing page-count/complexity signal anywhere in
+    raganything/ or api/, and adding one (e.g. pypdfium2) would mean a new
+    core dependency just for this.
+    """
+    size_mb = Path(file_path).stat().st_size / (1024 * 1024)
+    scaled = settings.document_processing_timeout_base_seconds + (
+        size_mb * settings.document_processing_timeout_per_mb_seconds
+    )
+    return min(int(scaled), settings.document_processing_timeout_max_seconds)
+
+
 def _resolve_doc_id(file_path: str) -> Optional[str]:
     """Find the LightRAG doc_id assigned to a just-processed file.
 
@@ -375,10 +391,11 @@ def _resolve_doc_id(file_path: str) -> Optional[str]:
 
 
 async def process_document_task(task_id: str, file_path: str) -> None:
+    timeout_seconds = _compute_timeout_seconds(file_path)
     update_progress(
         task_id, stage="queued", message="Waiting for another document to finish processing"
     )
-    async with _parse_lock:
+    async with _parse_semaphore:
         start_processing(task_id)
         update_progress(task_id, stage="parsing", progress=0, message="Parsing started")
         try:
@@ -389,7 +406,7 @@ async def process_document_task(task_id: str, file_path: str) -> None:
                     parse_method="auto",
                     env={"MINERU_DEVICE_MODE": "cuda"},
                 ),
-                timeout=settings.document_processing_timeout_seconds,
+                timeout=timeout_seconds,
             )
             complete_task(task_id)
         except asyncio.TimeoutError:
@@ -401,7 +418,7 @@ async def process_document_task(task_id: str, file_path: str) -> None:
             # forever, and keeps the server responsive to other requests.
             fail_task(
                 task_id,
-                f"Processing timed out after {settings.document_processing_timeout_seconds}s",
+                f"Processing timed out after {timeout_seconds}s",
             )
         except Exception as exc:
             fail_task(task_id, str(exc))

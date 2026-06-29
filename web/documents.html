@@ -29,38 +29,43 @@
     display: none;
   }
   .progress-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .progress-item {
     border: 1px solid #dbeafe;
     border-radius: 8px;
     padding: 16px;
     background: #f8fafc;
   }
-  .progress-panel .progress-filename {
+  .progress-item .progress-filename {
     font-size: 14px;
     font-weight: 600;
     color: #1a1a1a;
     margin: 0 0 8px;
     word-break: break-word;
   }
-  .progress-panel progress {
+  .progress-item progress {
     width: 100%;
     height: 10px;
     border-radius: 999px;
     overflow: hidden;
     border: none;
   }
-  .progress-panel progress::-webkit-progress-bar {
+  .progress-item progress::-webkit-progress-bar {
     background: #dbeafe;
     border-radius: 999px;
   }
-  .progress-panel progress::-webkit-progress-value {
+  .progress-item progress::-webkit-progress-value {
     background: #2563eb;
     border-radius: 999px;
   }
-  .progress-panel progress::-moz-progress-bar {
+  .progress-item progress::-moz-progress-bar {
     background: #2563eb;
     border-radius: 999px;
   }
-  .progress-panel .progress-meta {
+  .progress-item .progress-meta {
     margin: 8px 0 0;
     font-size: 13px;
     color: #4b5563;
@@ -68,12 +73,12 @@
     justify-content: space-between;
     gap: 8px;
   }
-  .progress-panel .progress-stage {
+  .progress-item .progress-stage {
     font-weight: 600;
     color: #1e40af;
     text-transform: capitalize;
   }
-  .progress-panel .progress-message {
+  .progress-item .progress-message {
     color: #6b7280;
     white-space: nowrap;
     overflow: hidden;
@@ -168,14 +173,7 @@
     <div class="dropzone" id="dropzone">
       <strong>Click to browse</strong> or drag and drop files here
     </div>
-    <div class="progress-panel" id="progress-panel" style="display: none;">
-      <p class="progress-filename" id="progress-filename"></p>
-      <progress id="progress-bar" max="100"></progress>
-      <p class="progress-meta">
-        <span class="progress-stage" id="progress-stage"></span>
-        <span class="progress-message" id="progress-message"></span>
-      </p>
-    </div>
+    <div class="progress-panel" id="progress-panel" style="display: none;"></div>
     <input type="file" id="file-input" multiple>
     <p class="upload-status" id="upload-status"></p>
 
@@ -202,10 +200,6 @@
     const emptyState = document.getElementById("empty-state");
     const uploadStatus = document.getElementById("upload-status");
     const progressPanel = document.getElementById("progress-panel");
-    const progressFilename = document.getElementById("progress-filename");
-    const progressBar = document.getElementById("progress-bar");
-    const progressStage = document.getElementById("progress-stage");
-    const progressMessage = document.getElementById("progress-message");
 
     // task_id -> DocumentTask, mirrors the server's task list exactly.
     const taskCache = new Map();
@@ -216,19 +210,21 @@
       return new Date(iso).toLocaleString();
     }
 
-    function findActiveTask() {
+    function findActiveTasks() {
       const tasks = [...taskCache.values()];
-      const processing = tasks.find((t) => t.status === "processing");
-      if (processing) return processing;
+      const processing = tasks
+        .filter((t) => t.status === "processing")
+        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      if (processing.length) return processing;
       const pending = tasks
         .filter((t) => t.status === "pending")
         .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-      return pending[0] || null;
+      return pending[0] ? [pending[0]] : [];
     }
 
     function renderActivePanel() {
-      const active = findActiveTask();
-      if (!active) {
+      const active = findActiveTasks();
+      if (!active.length) {
         dropzone.style.display = "";
         progressPanel.style.display = "none";
         return;
@@ -236,14 +232,24 @@
 
       dropzone.style.display = "none";
       progressPanel.style.display = "block";
-      progressFilename.textContent = active.file_name;
-      progressStage.textContent = active.stage || "queued";
-      progressMessage.textContent = active.progress_message || "";
-      if (active.progress === null || active.progress === undefined) {
-        progressBar.removeAttribute("value");
-      } else {
-        progressBar.value = active.progress;
-      }
+      progressPanel.innerHTML = active
+        .map((task) => {
+          const progressAttr =
+            task.progress === null || task.progress === undefined
+              ? ""
+              : ` value="${task.progress}"`;
+          return `
+            <div class="progress-item">
+              <p class="progress-filename">${escapeHtml(task.file_name)}</p>
+              <progress max="100"${progressAttr}></progress>
+              <p class="progress-meta">
+                <span class="progress-stage">${escapeHtml(task.stage || "queued")}</span>
+                <span class="progress-message">${escapeHtml(task.progress_message || "")}</span>
+              </p>
+            </div>
+          `;
+        })
+        .join("");
     }
 
     function render() {
@@ -333,9 +339,7 @@
     async function handleFiles(fileList) {
       if (!fileList.length) return;
       try {
-        for (const file of fileList) {
-          await uploadFile(file);
-        }
+        await Promise.all([...fileList].map((file) => uploadFile(file)));
       } finally {
         uploadStatus.textContent = "";
       }
