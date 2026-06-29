@@ -20,6 +20,9 @@ class DocumentTask(BaseModel):
     created_at: datetime
     completed_at: Optional[datetime] = None
     doc_id: Optional[str] = None
+    stage: Optional[str] = None
+    progress: Optional[float] = None
+    progress_message: Optional[str] = None
 
 
 class QueryRequest(BaseModel):

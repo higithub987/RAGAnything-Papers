@@ -40,6 +40,7 @@ import urllib.request
 import shutil
 from pathlib import Path
 from typing import (
+    Callable,
     Dict,
     List,
     Optional,
@@ -800,6 +801,7 @@ class MineruParser(Parser):
         source: Optional[str] = None,
         vlm_url: Optional[str] = None,
         timeout: Optional[int] = None,
+        progress_callback: Optional[Callable[[str], None]] = None,
         **kwargs,
     ) -> None:
         """
@@ -820,6 +822,9 @@ class MineruParser(Parser):
             vlm_url: When the backend is `vlm-http-client`, you need to specify the server_url
             timeout: Maximum seconds to wait for MinerU to complete. None means no limit.
                      Raises TimeoutError if the process does not finish within this duration.
+            progress_callback: Optional callback invoked with each line of MinerU's
+                stdout/stderr as it streams in, for surfacing live progress.
+                Best-effort: exceptions raised by the callback are swallowed.
             **kwargs: Additional parameters for subprocess (e.g., env)
         """
         cmd = [
@@ -931,6 +936,14 @@ class MineruParser(Parser):
             stdout_thread.start()
             stderr_thread.start()
 
+            def _report_progress(line: str) -> None:
+                if progress_callback is None:
+                    return
+                try:
+                    progress_callback(line)
+                except Exception:
+                    cls.logger.debug("progress_callback raised; ignoring", exc_info=True)
+
             # Process output in real time
             start_time = time.monotonic()
 
@@ -942,6 +955,7 @@ class MineruParser(Parser):
                         output_lines.append(line)
                         # Log mineru output with INFO level, prefixed with [MinerU]
                         cls.logger.info(f"[MinerU] {line}")
+                        _report_progress(line)
                 except Empty:
                     pass
 
@@ -958,6 +972,7 @@ class MineruParser(Parser):
                             error_lines.append(error_message)
                         else:
                             cls.logger.info(f"[MinerU] {line}")
+                        _report_progress(line)
                 except Empty:
                     pass
 

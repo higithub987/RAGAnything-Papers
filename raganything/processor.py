@@ -7,11 +7,14 @@ Contains methods for parsing documents and processing multimodal content
 from __future__ import annotations
 
 import os
+import re
 import time
 import hashlib
 import json
 from typing import Dict, List, Any, Tuple, Optional
 from pathlib import Path
+
+_PROGRESS_PERCENT_RE = re.compile(r"(\d{1,3})%\|")
 
 from raganything.base import DocStatus
 from raganything.parser import MineruParser, MineruExecutionError, get_parser
@@ -469,6 +472,34 @@ class ProcessorMixin:
                 f"Using {self.config.parser} parser with method: {parse_method}"
             )
 
+            # MinerU streams its own subprocess output line-by-line; forward it as
+            # a best-effort live "still working" progress signal. Other parser
+            # backends don't accept this kwarg, so only attach it for MinerU.
+            last_progress_dispatch = 0.0
+
+            def _on_progress_line(line: str) -> None:
+                nonlocal last_progress_dispatch
+                if callback_manager is None:
+                    return
+                now = time.monotonic()
+                if now - last_progress_dispatch < 0.5:
+                    return
+                last_progress_dispatch = now
+                match = _PROGRESS_PERCENT_RE.search(line)
+                percent = float(match.group(1)) if match else None
+                callback_manager.dispatch(
+                    "on_parse_progress",
+                    file_path=callback_file,
+                    message=line,
+                    percent=percent,
+                )
+
+            mineru_progress_kwargs = (
+                {"progress_callback": _on_progress_line}
+                if isinstance(doc_parser, MineruParser)
+                else {}
+            )
+
             if ext in [".pdf"]:
                 self.logger.info("Detected PDF file, using parser for PDF...")
                 content_list = await asyncio.to_thread(
@@ -477,6 +508,7 @@ class ProcessorMixin:
                     output_dir=output_dir,
                     method=parse_method,
                     **kwargs,
+                    **mineru_progress_kwargs,
                 )
             elif ext in [
                 ".jpg",
@@ -495,6 +527,7 @@ class ProcessorMixin:
                         image_path=file_path,
                         output_dir=output_dir,
                         **kwargs,
+                        **mineru_progress_kwargs,
                     )
                 except NotImplementedError:
                     # Fallback to MinerU for image parsing if current parser doesn't support it
@@ -505,6 +538,7 @@ class ProcessorMixin:
                         MineruParser().parse_image,
                         image_path=file_path,
                         output_dir=output_dir,
+                        progress_callback=_on_progress_line,
                         **kwargs,
                     )
             elif ext in [
@@ -526,6 +560,7 @@ class ProcessorMixin:
                     doc_path=file_path,
                     output_dir=output_dir,
                     **kwargs,
+                    **mineru_progress_kwargs,
                 )
             else:
                 # For other or unknown formats, use generic parser
@@ -538,6 +573,7 @@ class ProcessorMixin:
                     method=parse_method,
                     output_dir=output_dir,
                     **kwargs,
+                    **mineru_progress_kwargs,
                 )
 
         except MineruExecutionError as e:

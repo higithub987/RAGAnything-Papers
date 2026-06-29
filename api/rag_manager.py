@@ -14,15 +14,107 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
 from raganything import RAGAnything, RAGAnythingConfig
+from raganything.callbacks import ProcessingCallback
 from raganything.utils import strip_thinking_tags
 
 from .config import settings
 from .doc_names_store import load_doc_names, save_doc_name
 from .models import TaskStatus
-from .task_store import complete_task, fail_task, get_task, import_existing, set_doc_id
+from .task_store import (
+    complete_task,
+    fail_task,
+    get_task,
+    get_task_id_by_file_path,
+    import_existing,
+    set_doc_id,
+    start_processing,
+    update_progress,
+)
+
+
+class ProgressTrackingCallback(ProcessingCallback):
+    """Mirrors RAGAnything's processing events into the API's task store.
+
+    Resolves the file path each event carries back to a task_id via
+    task_store's path index, then updates that task's stage/progress fields
+    so GET /documents/{task_id} reflects live progress instead of only
+    flipping between "processing" and "completed"/"failed".
+    """
+
+    def _task_id_for(self, file_path: str) -> Optional[str]:
+        return get_task_id_by_file_path(file_path)
+
+    def on_parse_start(self, file_path: str, **kwargs) -> None:
+        task_id = self._task_id_for(file_path)
+        if task_id:
+            update_progress(task_id, stage="parsing", progress=0, message="Parsing started")
+
+    def on_parse_progress(
+        self, file_path: str, message: str = "", percent: Optional[float] = None, **kwargs
+    ) -> None:
+        task_id = self._task_id_for(file_path)
+        if task_id:
+            update_progress(task_id, stage="parsing", progress=percent, message=message)
+
+    def on_parse_complete(self, file_path: str, **kwargs) -> None:
+        task_id = self._task_id_for(file_path)
+        if task_id:
+            update_progress(task_id, stage="parsing", progress=100, message="Parsing complete")
+
+    def on_text_insert_start(self, file_path: str, **kwargs) -> None:
+        task_id = self._task_id_for(file_path)
+        if task_id:
+            update_progress(task_id, stage="text_insert", progress=0, message="Inserting text")
+
+    def on_text_insert_complete(self, file_path: str, **kwargs) -> None:
+        task_id = self._task_id_for(file_path)
+        if task_id:
+            update_progress(task_id, stage="text_insert", progress=100, message="Text inserted")
+
+    def on_multimodal_start(self, file_path: str, item_count: int = 0, **kwargs) -> None:
+        task_id = self._task_id_for(file_path)
+        if task_id:
+            update_progress(
+                task_id, stage="multimodal", progress=0, message=f"0/{item_count} items"
+            )
+
+    def on_multimodal_item_complete(
+        self,
+        file_path: str,
+        item_index: int = 0,
+        total_items: int = 0,
+        **kwargs,
+    ) -> None:
+        task_id = self._task_id_for(file_path)
+        if task_id:
+            progress = (item_index / total_items * 100) if total_items else None
+            update_progress(
+                task_id,
+                stage="multimodal",
+                progress=progress,
+                message=f"{item_index}/{total_items} items",
+            )
+
+    def on_multimodal_complete(self, file_path: str, **kwargs) -> None:
+        task_id = self._task_id_for(file_path)
+        if task_id:
+            update_progress(task_id, stage="multimodal", progress=100, message="Multimodal processing complete")
+
+    def on_document_complete(self, file_path: str, **kwargs) -> None:
+        task_id = self._task_id_for(file_path)
+        if task_id:
+            update_progress(task_id, stage="complete", progress=100, message="Document complete")
+
+    def on_document_error(self, file_path: str, error=None, **kwargs) -> None:
+        task_id = self._task_id_for(file_path)
+        if task_id:
+            update_progress(task_id, stage="failed", message=str(error))
 
 _rag: Optional[RAGAnything] = None
 _fast_llm_func = None
+# Only one document parses at a time; asyncio.Lock grants waiters in FIFO
+# order, so queued uploads start in upload order.
+_parse_lock = asyncio.Lock()
 
 
 def _complete(model: str, prompt, system_prompt=None, history_messages=None, **kwargs):
@@ -158,6 +250,7 @@ def initialize_rag() -> RAGAnything:
         embedding_func=_build_embedding_func(),
         lightrag_kwargs={"vector_storage": "MilvusVectorDBStorage"},
     )
+    _rag.callback_manager.register(ProgressTrackingCallback())
     return _rag
 
 
@@ -282,34 +375,40 @@ def _resolve_doc_id(file_path: str) -> Optional[str]:
 
 
 async def process_document_task(task_id: str, file_path: str) -> None:
-    try:
-        await asyncio.wait_for(
-            get_rag().process_document_complete(
-                file_path=file_path,
-                output_dir=settings.output_dir,
-                parse_method="auto",
-                env={"MINERU_DEVICE_MODE": "cuda"},
-            ),
-            timeout=settings.document_processing_timeout_seconds,
-        )
-        complete_task(task_id)
-    except asyncio.TimeoutError:
-        # The underlying parser call runs in a worker thread (see
-        # RAGAnythingPDFProcessor.parse_document's use of asyncio.to_thread),
-        # which can't be force-killed from here — it may keep running in the
-        # background until it exits on its own. This at least stops a hung
-        # parser from leaving the task (and the UI) stuck on "processing"
-        # forever, and keeps the server responsive to other requests.
-        fail_task(
-            task_id,
-            f"Processing timed out after {settings.document_processing_timeout_seconds}s",
-        )
-    except Exception as exc:
-        fail_task(task_id, str(exc))
-    finally:
-        doc_id = _resolve_doc_id(file_path)
-        if doc_id is not None:
-            set_doc_id(task_id, doc_id)
-            task = get_task(task_id)
-            if task is not None:
-                save_doc_name(doc_id, task.file_name)
+    update_progress(
+        task_id, stage="queued", message="Waiting for another document to finish processing"
+    )
+    async with _parse_lock:
+        start_processing(task_id)
+        update_progress(task_id, stage="parsing", progress=0, message="Parsing started")
+        try:
+            await asyncio.wait_for(
+                get_rag().process_document_complete(
+                    file_path=file_path,
+                    output_dir=settings.output_dir,
+                    parse_method="auto",
+                    env={"MINERU_DEVICE_MODE": "cuda"},
+                ),
+                timeout=settings.document_processing_timeout_seconds,
+            )
+            complete_task(task_id)
+        except asyncio.TimeoutError:
+            # The underlying parser call runs in a worker thread (see
+            # RAGAnythingPDFProcessor.parse_document's use of asyncio.to_thread),
+            # which can't be force-killed from here — it may keep running in the
+            # background until it exits on its own. This at least stops a hung
+            # parser from leaving the task (and the UI) stuck on "processing"
+            # forever, and keeps the server responsive to other requests.
+            fail_task(
+                task_id,
+                f"Processing timed out after {settings.document_processing_timeout_seconds}s",
+            )
+        except Exception as exc:
+            fail_task(task_id, str(exc))
+        finally:
+            doc_id = _resolve_doc_id(file_path)
+            if doc_id is not None:
+                set_doc_id(task_id, doc_id)
+                task = get_task(task_id)
+                if task is not None:
+                    save_doc_name(doc_id, task.file_name)

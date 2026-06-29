@@ -87,6 +87,21 @@ class ProcessingCallback:
     ) -> None:
         """Called when document parsing fails."""
 
+    def on_parse_progress(
+        self,
+        file_path: str,
+        message: str = "",
+        percent: Optional[float] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Called repeatedly while document parsing is in progress.
+
+        Unlike :meth:`on_parse_start`/:meth:`on_parse_complete` (which fire
+        once each), this may fire many times during a single parse. ``percent``
+        is best-effort and may be ``None`` when the underlying parser doesn't
+        report a numeric progress value.
+        """
+
     # ── Text insertion stage ──────────────────────────────────────
     def on_text_insert_start(
         self, file_path: str, text_length: int = 0, **kwargs: Any

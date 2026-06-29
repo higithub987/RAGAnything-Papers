@@ -20,7 +20,7 @@ async def upload_document(file: UploadFile, background_tasks: BackgroundTasks):
     dest = upload_path / f"{task_id}_{file.filename}"
     dest.write_bytes(await file.read())
 
-    task = create_task(task_id, file.filename)
+    task = create_task(task_id, file.filename, on_disk_name=dest.name)
     background_tasks.add_task(process_document_task, task_id, str(dest))
     return task
 
