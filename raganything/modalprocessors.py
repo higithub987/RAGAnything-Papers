@@ -28,6 +28,20 @@ from lightrag.operate import extract_entities, merge_nodes_and_edges
 
 # Import prompt templates
 from raganything.prompt import PROMPTS
+
+# Precompiled patterns for the JSON-repair fallback path (LLM response parsing)
+_JSON_CODE_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+_JSON_BRACES_RE = re.compile(r"\{.*\}", re.DOTALL)
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+_UNESCAPED_BACKSLASH_BEFORE_QUOTE_RE = re.compile(r'(?<!\\)\\(?=")')
+_UNESCAPED_BACKSLASH_BEFORE_LETTER_RE = re.compile(r"\\(?=[a-zA-Z])")
+_STRING_VALUE_RE = re.compile(r'"([^"]*(?:\\.[^"]*)*)"')
+_DETAILED_DESCRIPTION_RE = re.compile(
+    r'"detailed_description":\s*"([^"]*(?:\\.[^"]*)*)"', re.DOTALL
+)
+_ENTITY_NAME_RE = re.compile(r'"entity_name":\s*"([^"]*(?:\\.[^"]*)*)"')
+_ENTITY_TYPE_RE = re.compile(r'"entity_type":\s*"([^"]*(?:\\.[^"]*)*)"')
+_SUMMARY_RE = re.compile(r'"summary":\s*"([^"]*(?:\\.[^"]*)*)"', re.DOTALL)
 from raganything.utils import (
     format_table_body,
     get_equation_text_and_format,
@@ -598,9 +612,7 @@ class BaseModalProcessor:
         cleaned_response = strip_thinking_tags(response)
 
         # Method 1: JSON in code blocks
-        json_blocks = re.findall(
-            r"```(?:json)?\s*(\{.*?\})\s*```", cleaned_response, re.DOTALL
-        )
+        json_blocks = _JSON_CODE_BLOCK_RE.findall(cleaned_response)
         candidates.extend(json_blocks)
 
         # Method 2: Balanced braces
@@ -618,7 +630,7 @@ class BaseModalProcessor:
                     candidates.append(cleaned_response[start_pos : i + 1])
 
         # Method 3: Simple regex fallback
-        simple_match = re.search(r"\{.*\}", cleaned_response, re.DOTALL)
+        simple_match = _JSON_BRACES_RE.search(cleaned_response)
         if simple_match:
             candidates.append(simple_match.group(0))
 
@@ -644,23 +656,25 @@ class BaseModalProcessor:
         json_str = json_str.replace(""", "'").replace(""", "'")  # Smart apostrophes
 
         # Fix trailing commas (simple case)
-        json_str = re.sub(r",(\s*[}\]])", r"\1", json_str)
+        json_str = _TRAILING_COMMA_RE.sub(r"\1", json_str)
 
         return json_str
 
     def _progressive_quote_fix(self, json_str: str) -> str:
         """Progressive fixing of quote and escape issues"""
         # Only escape unescaped backslashes before quotes
-        json_str = re.sub(r'(?<!\\)\\(?=")', r"\\\\", json_str)
+        json_str = _UNESCAPED_BACKSLASH_BEFORE_QUOTE_RE.sub(r"\\\\", json_str)
 
         # Fix unescaped backslashes in string values (more conservative)
         def fix_string_content(match):
             content = match.group(1)
             # Only escape obvious problematic patterns
-            content = re.sub(r"\\(?=[a-zA-Z])", r"\\\\", content)  # \alpha -> \\alpha
+            content = _UNESCAPED_BACKSLASH_BEFORE_LETTER_RE.sub(
+                r"\\\\", content
+            )  # \alpha -> \\alpha
             return f'"{content}"'
 
-        json_str = re.sub(r'"([^"]*(?:\\.[^"]*)*)"', fix_string_content, json_str)
+        json_str = _STRING_VALUE_RE.sub(fix_string_content, json_str)
         return json_str
 
     def _extract_fields_with_regex(self, response: str) -> dict:
@@ -668,23 +682,19 @@ class BaseModalProcessor:
         logger.warning("Using regex fallback for JSON parsing")
 
         # Extract detailed_description
-        desc_match = re.search(
-            r'"detailed_description":\s*"([^"]*(?:\\.[^"]*)*)"', response, re.DOTALL
-        )
+        desc_match = _DETAILED_DESCRIPTION_RE.search(response)
         description = desc_match.group(1) if desc_match else ""
 
         # Extract entity_name
-        name_match = re.search(r'"entity_name":\s*"([^"]*(?:\\.[^"]*)*)"', response)
+        name_match = _ENTITY_NAME_RE.search(response)
         entity_name = name_match.group(1) if name_match else "unknown_entity"
 
         # Extract entity_type
-        type_match = re.search(r'"entity_type":\s*"([^"]*(?:\\.[^"]*)*)"', response)
+        type_match = _ENTITY_TYPE_RE.search(response)
         entity_type = type_match.group(1) if type_match else "unknown"
 
         # Extract summary
-        summary_match = re.search(
-            r'"summary":\s*"([^"]*(?:\\.[^"]*)*)"', response, re.DOTALL
-        )
+        summary_match = _SUMMARY_RE.search(response)
         summary = summary_match.group(1) if summary_match else description[:100]
 
         return {

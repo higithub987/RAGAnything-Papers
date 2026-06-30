@@ -2,12 +2,64 @@
   color-scheme: light;
   --blue: #2563eb;
   --blue-dark: #1d4ed8;
+  --blue-shadow: rgba(37, 99, 235, 0.15);
   --text: #1a1a1a;
+  --text-strong: #374151;
   --text-muted: #6b7280;
   --text-faint: #9ca3af;
+  --text-secondary: #4b5563;
   --border: #d1d5db;
+  --border-soft: #e5e7eb;
   --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-subtle: #f8fafc;
   --card-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  --accent-soft-bg: #eff6ff;
+  --accent-light: #dbeafe;
+  --accent-text-strong: #1e3a8a;
+  --success-bg: #f0fdf4;
+  --success-border: #bbf7d0;
+  --success-text: #14532d;
+  --success-bg-strong: #dcfce7;
+  --success-text-strong: #166534;
+  --danger-bg: #fef2f2;
+  --danger-border: #fecaca;
+  --danger-text: #991b1b;
+  --danger-bg-strong: #fee2e2;
+  --neutral-bg: #f3f4f6;
+  --neutral-border: #e5e7eb;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --blue: #3b82f6;
+  --blue-dark: #60a5fa;
+  --blue-shadow: rgba(59, 130, 246, 0.25);
+  --text: #e6e7eb;
+  --text-strong: #d1d5db;
+  --text-muted: #9ca3af;
+  --text-faint: #6b7280;
+  --text-secondary: #b0b4bd;
+  --border: #3a3d45;
+  --border-soft: #2d2f36;
+  --bg: #16181d;
+  --surface: #1f2128;
+  --surface-subtle: #25272f;
+  --card-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  --accent-soft-bg: #1e2a44;
+  --accent-light: #1e3a5f;
+  --accent-text-strong: #93c5fd;
+  --success-bg: #16291c;
+  --success-border: #1f4429;
+  --success-text: #86efac;
+  --success-bg-strong: #15321f;
+  --success-text-strong: #4ade80;
+  --danger-bg: #2e1716;
+  --danger-border: #4c2220;
+  --danger-text: #fca5a5;
+  --danger-bg-strong: #3a1d1c;
+  --neutral-bg: #25272f;
+  --neutral-border: #343740;
 }
 
 body {
@@ -38,9 +90,9 @@ body {
   border-radius: 8px;
   font-weight: 600;
   font-size: 14px;
-  color: #374151;
+  color: var(--text-strong);
   text-decoration: none;
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--border);
   transition: background 0.15s ease;
 }
@@ -55,8 +107,106 @@ body {
   border-color: var(--blue);
 }
 
+.nav-brand {
+  position: relative;
+}
+
+.brand-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-strong);
+  text-decoration: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  transition: background 0.15s ease;
+}
+
+.brand-icon:hover {
+  background: var(--bg);
+}
+
+.brand-icon.active {
+  background: var(--blue);
+  color: #fff;
+  border-color: var(--blue);
+}
+
+.brand-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 140px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--card-shadow);
+  padding: 6px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s ease;
+  z-index: 10;
+}
+
+.nav-brand:hover .brand-dropdown,
+.nav-brand:focus-within .brand-dropdown {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.brand-dropdown a {
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-strong);
+  text-decoration: none;
+  transition: background 0.15s ease;
+}
+
+.brand-dropdown a:hover:not(.active) {
+  background: var(--bg);
+}
+
+.brand-dropdown a.active {
+  background: var(--blue);
+  color: #fff;
+}
+
+.theme-toggle {
+  flex: 0 0 auto;
+  width: 42px;
+  text-align: center;
+  padding: 10px;
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--text-strong);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.theme-toggle:hover {
+  background: var(--bg);
+}
+
 .card {
-  background: #ffffff;
+  background: var(--surface);
   border-radius: 12px;
   box-shadow: var(--card-shadow);
   padding: 32px;

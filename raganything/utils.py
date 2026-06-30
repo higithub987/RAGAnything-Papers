@@ -13,6 +13,9 @@ from typing import Dict, List, Any, Tuple
 from pathlib import Path
 from lightrag.utils import logger
 
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_THINKING_TAG_RE = re.compile(r"<thinking>.*?</thinking>", re.DOTALL | re.IGNORECASE)
+
 
 def strip_thinking_tags(text: str) -> str:
     """Remove <think>/<thinking> tags produced by reasoning models.
@@ -23,10 +26,8 @@ def strip_thinking_tags(text: str) -> str:
     model output to end users/the knowledge graph want only the final
     answer, not the reasoning preamble.
     """
-    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
-    cleaned = re.sub(
-        r"<thinking>.*?</thinking>", "", cleaned, flags=re.DOTALL | re.IGNORECASE
-    )
+    cleaned = _THINK_TAG_RE.sub("", text)
+    cleaned = _THINKING_TAG_RE.sub("", cleaned)
     return cleaned.strip()
 
 

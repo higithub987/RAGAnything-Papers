@@ -6,6 +6,7 @@ Contains methods for processing multiple documents in batch mode
 
 import asyncio
 import logging
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 import time
@@ -81,14 +82,16 @@ class BatchMixin:
         if not folder_path_obj.exists():
             raise FileNotFoundError(f"Folder not found: {folder_path}")
 
-        # Collect files based on supported extensions
-        files_to_process = []
-        for file_ext in file_extensions:
-            if recursive:
-                pattern = f"**/*{file_ext}"
-            else:
-                pattern = f"*{file_ext}"
-            files_to_process.extend(folder_path_obj.glob(pattern))
+        # Collect files based on supported extensions (single tree walk instead of
+        # one glob per extension; fnmatch applies the same os.path.normcase rules
+        # pathlib.Path.glob uses, so platform case-sensitivity behavior is unchanged)
+        candidates = folder_path_obj.rglob("*") if recursive else folder_path_obj.glob("*")
+        files_to_process = [
+            candidate
+            for candidate in candidates
+            if candidate.is_file()
+            and any(fnmatch(candidate.name, f"*{file_ext}") for file_ext in file_extensions)
+        ]
 
         if not files_to_process:
             self.logger.warning(f"No supported files found in {folder_path}")
@@ -280,7 +283,10 @@ class BatchMixin:
 
     def get_supported_file_extensions(self) -> List[str]:
         """Get list of supported file extensions for batch processing"""
-        batch_parser = BatchParser(parser_type=self.config.parser)
+        batch_parser = BatchParser(
+            parser_type=self.config.parser,
+            skip_installation_check=True,  # Metadata only, no parsing happens here
+        )
         return batch_parser.get_supported_extensions()
 
     def filter_supported_files(
@@ -299,7 +305,10 @@ class BatchMixin:
         if recursive is None:
             recursive = self.config.recursive_folder_processing
 
-        batch_parser = BatchParser(parser_type=self.config.parser)
+        batch_parser = BatchParser(
+            parser_type=self.config.parser,
+            skip_installation_check=True,  # Metadata only, no parsing happens here
+        )
         return batch_parser.filter_supported_files(file_paths, recursive)
 
     async def process_documents_with_rag_batch(

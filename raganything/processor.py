@@ -494,13 +494,15 @@ class ProcessorMixin:
                 parser=self.config.parser,
             )
 
-        # Generate cache key based on file and configuration
-        cache_key = self._generate_cache_key(file_path, parse_method, **kwargs)
-
-        # Check cache first
-        cached_result = await self._get_cached_result(
-            cache_key, file_path, parse_method, **kwargs
-        )
+        # Only bother computing a cache key (file stat + MD5 hash) when caching is enabled
+        cache_enabled = hasattr(self, "parse_cache") and self.parse_cache is not None
+        cache_key = None
+        cached_result = None
+        if cache_enabled:
+            cache_key = self._generate_cache_key(file_path, parse_method, **kwargs)
+            cached_result = await self._get_cached_result(
+                cache_key, file_path, parse_method, **kwargs
+            )
         if cached_result is not None:
             content_list, doc_id = cached_result
             self.logger.info(f"Using cached parsing result for: {file_path}")

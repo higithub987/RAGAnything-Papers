@@ -4,23 +4,30 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RAG-Anything Documents</title>
+<script>
+  (function () {
+    const saved = localStorage.getItem("ragTheme");
+    const theme = saved || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.dataset.theme = theme;
+  })();
+</script>
 <link rel="stylesheet" href="/shared.css">
 <style>
   .dropzone {
-    border: 2px dashed #d1d5db;
+    border: 2px dashed var(--border);
     border-radius: 8px;
     padding: 28px 16px;
     text-align: center;
-    color: #6b7280;
+    color: var(--text-muted);
     font-size: 14px;
     cursor: pointer;
     transition: border-color 0.15s ease, background 0.15s ease;
   }
   .dropzone:hover,
   .dropzone.dragover {
-    border-color: #2563eb;
-    background: #eff6ff;
-    color: #1d4ed8;
+    border-color: var(--blue);
+    background: var(--accent-soft-bg);
+    color: var(--blue-dark);
   }
   .dropzone strong {
     color: inherit;
@@ -34,15 +41,15 @@
     gap: 12px;
   }
   .progress-item {
-    border: 1px solid #dbeafe;
+    border: 1px solid var(--accent-light);
     border-radius: 8px;
     padding: 16px;
-    background: #f8fafc;
+    background: var(--surface-subtle);
   }
   .progress-item .progress-filename {
     font-size: 14px;
     font-weight: 600;
-    color: #1a1a1a;
+    color: var(--text);
     margin: 0 0 8px;
     word-break: break-word;
   }
@@ -54,32 +61,32 @@
     border: none;
   }
   .progress-item progress::-webkit-progress-bar {
-    background: #dbeafe;
+    background: var(--accent-light);
     border-radius: 999px;
   }
   .progress-item progress::-webkit-progress-value {
-    background: #2563eb;
+    background: var(--blue);
     border-radius: 999px;
   }
   .progress-item progress::-moz-progress-bar {
-    background: #2563eb;
+    background: var(--blue);
     border-radius: 999px;
   }
   .progress-item .progress-meta {
     margin: 8px 0 0;
     font-size: 13px;
-    color: #4b5563;
+    color: var(--text-secondary);
     display: flex;
     justify-content: space-between;
     gap: 8px;
   }
   .progress-item .progress-stage {
     font-weight: 600;
-    color: #1e40af;
+    color: var(--accent-text-strong);
     text-transform: capitalize;
   }
   .progress-item .progress-message {
-    color: #6b7280;
+    color: var(--text-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -87,7 +94,7 @@
   .upload-status {
     margin: 10px 0 0;
     font-size: 13px;
-    color: #2563eb;
+    color: var(--blue);
     min-height: 16px;
   }
   table {
@@ -100,24 +107,24 @@
     text-align: left;
     font-size: 12px;
     font-weight: 600;
-    color: #6b7280;
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.03em;
     padding: 0 8px 8px;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--border-soft);
   }
   td {
     padding: 10px 8px;
-    border-bottom: 1px solid #f3f4f6;
+    border-bottom: 1px solid var(--border-soft);
     vertical-align: middle;
-    color: #1a1a1a;
+    color: var(--text);
   }
   td.filename {
     word-break: break-word;
   }
   td.error-text {
     font-size: 12px;
-    color: #991b1b;
+    color: var(--danger-text);
     margin-top: 2px;
     display: block;
   }
@@ -129,42 +136,48 @@
     font-weight: 600;
   }
   .badge.processing {
-    background: #dbeafe;
-    color: #1e40af;
+    background: var(--accent-light);
+    color: var(--accent-text-strong);
   }
   .badge.completed {
-    background: #dcfce7;
-    color: #166534;
+    background: var(--success-bg-strong);
+    color: var(--success-text-strong);
   }
   .badge.failed {
-    background: #fee2e2;
-    color: #991b1b;
+    background: var(--danger-bg-strong);
+    color: var(--danger-text);
   }
   .badge.pending {
-    background: #f3f4f6;
-    color: #4b5563;
+    background: var(--neutral-bg);
+    color: var(--text-secondary);
   }
   .icon-btn {
     background: none;
     border: none;
     cursor: pointer;
-    color: #9ca3af;
+    color: var(--text-faint);
     font-size: 16px;
     padding: 4px 8px;
     border-radius: 6px;
     transition: background 0.15s ease, color 0.15s ease;
   }
   .icon-btn:hover {
-    background: #fee2e2;
-    color: #991b1b;
+    background: var(--danger-bg-strong);
+    color: var(--danger-text);
   }
 </style>
 </head>
 <body>
   <div class="page">
   <nav class="nav">
-    <a href="/documents.html" class="active">Documents</a>
-    <a href="/">Chat</a>
+    <div class="nav-brand">
+      <a href="/" class="brand-icon" title="Home">RAG</a>
+      <div class="brand-dropdown">
+        <a href="/documents.html" class="active">Documents</a>
+        <a href="/chat.html">Chat</a>
+      </div>
+    </div>
+    <button type="button" id="theme-toggle" class="theme-toggle" title="Toggle dark mode">🌙</button>
   </nav>
   <div class="card">
     <h1>Manage documents</h1>
@@ -192,6 +205,7 @@
   </div>
   </div>
 
+  <script src="/theme.js"></script>
   <script>
     const dropzone = document.getElementById("dropzone");
     const fileInput = document.getElementById("file-input");
@@ -205,13 +219,52 @@
     const taskCache = new Map();
     let pollHandle = null;
 
+    // Uploads can briefly appear as two task entries: the live upload task
+    // (plain UUID task_id) and a synthesized snapshot the server re-derives
+    // from on-disk doc status (task_id is the content-hash doc_id, always
+    // prefixed "doc-"). Collapse the pair to the live entry, since it tracks
+    // real-time backend state (including the timeout fail-safe) instead of
+    // a polled disk snapshot that can lag behind.
+    const UPLOAD_PREFIX_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_/i;
+
+    function normalizedName(fileName) {
+      return (fileName || "").replace(UPLOAD_PREFIX_RE, "");
+    }
+
+    function isSynthesized(task) {
+      return task.task_id.startsWith("doc-");
+    }
+
+    function dedupeTasks(tasks) {
+      const liveTasks = tasks.filter((t) => !isSynthesized(t));
+      const hiddenIds = new Set();
+
+      for (const synth of tasks) {
+        if (!isSynthesized(synth)) continue;
+
+        const match = liveTasks.find((live) => {
+          if (live.doc_id) return live.doc_id === synth.task_id;
+          // Live task hasn't linked its doc_id yet (still processing) --
+          // fall back to matching the upload-prefixed filename and recency.
+          const sameName = normalizedName(live.file_name) === normalizedName(synth.file_name);
+          const closeInTime =
+            Math.abs(new Date(live.created_at) - new Date(synth.created_at)) < 5 * 60 * 1000;
+          return sameName && closeInTime;
+        });
+
+        if (match) hiddenIds.add(synth.task_id);
+      }
+
+      return tasks.filter((t) => !hiddenIds.has(t.task_id));
+    }
+
     function formatDate(iso) {
       if (!iso) return "—";
       return new Date(iso).toLocaleString();
     }
 
     function findActiveTasks() {
-      return [...taskCache.values()]
+      return dedupeTasks([...taskCache.values()])
         .filter((t) => t.status === "processing" || t.status === "pending")
         .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
     }
@@ -247,7 +300,7 @@
     }
 
     function render() {
-      const tasks = [...taskCache.values()].sort(
+      const tasks = dedupeTasks([...taskCache.values()]).sort(
         (a, b) => new Date(b.created_at) - new Date(a.created_at)
       );
 
