@@ -11,22 +11,32 @@
     document.documentElement.dataset.theme = theme;
   })();
 </script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/shared.css">
 <style>
   .hero {
     text-align: center;
-    margin-bottom: 24px;
+    padding: 32px 24px 28px;
+    margin-bottom: 20px;
   }
   .hero h1 {
-    font-size: 28px;
+    font-size: 36px;
+    font-weight: 700;
+    margin: 0 0 12px;
+    letter-spacing: -0.02em;
   }
   .hero p.subtitle {
     margin: 0 auto;
-    max-width: 520px;
+    max-width: 480px;
+    font-size: 15px;
+    line-height: 1.65;
+    color: var(--text-muted);
   }
   .cta-grid {
     display: flex;
-    gap: 24px;
+    gap: 20px;
   }
   .cta-card {
     flex: 1;
@@ -36,19 +46,25 @@
     text-align: center;
     text-decoration: none;
     color: inherit;
+    padding: 36px;
     border: 1px solid transparent;
-    transition: border-color 0.15s ease, transform 0.15s ease;
+    transition: border-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
   }
   .cta-card:hover {
     border-color: var(--blue);
-    transform: translateY(-2px);
+    transform: translateY(-3px);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12);
+  }
+  :root[data-theme="dark"] .cta-card:hover {
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
   }
   .cta-icon {
-    font-size: 32px;
-    margin-bottom: 12px;
+    font-size: 40px;
+    margin-bottom: 14px;
   }
   .cta-card h2 {
     font-size: 18px;
+    font-weight: 600;
     margin: 0 0 8px;
     color: var(--text);
   }
@@ -56,6 +72,19 @@
     margin: 0;
     font-size: 14px;
     color: var(--text-muted);
+    line-height: 1.5;
+  }
+  .cta-arrow {
+    margin-top: 18px;
+    font-size: 18px;
+    color: var(--blue);
+    opacity: 0;
+    transform: translateX(-6px);
+    transition: opacity 0.18s ease, transform 0.18s ease;
+  }
+  .cta-card:hover .cta-arrow {
+    opacity: 1;
+    transform: translateX(0);
   }
 </style>
 </head>
@@ -63,16 +92,17 @@
   <div class="page">
   <nav class="nav">
     <div class="nav-brand">
-      <a href="/" class="brand-icon active" title="Home">RAG</a>
+      <a href="/" class="brand-icon active" title="Home">RAG ▾</a>
       <div class="brand-dropdown">
         <a href="/documents.html">Documents</a>
         <a href="/chat.html">Chat</a>
+        <a href="/visualize.html">Visualize</a>
       </div>
     </div>
     <button type="button" id="theme-toggle" class="theme-toggle" title="Toggle dark mode">🌙</button>
   </nav>
 
-  <div class="card hero">
+  <div class="hero">
     <h1>RAG-Anything</h1>
     <p class="subtitle">
       A personal knowledge base for your documents. Upload academic papers and
@@ -86,11 +116,13 @@
       <span class="cta-icon">💬</span>
       <h2>Chat</h2>
       <p>Ask questions conversationally and get answers grounded in your documents.</p>
+      <span class="cta-arrow">→</span>
     </a>
     <a class="card cta-card" href="/documents.html">
       <span class="cta-icon">📄</span>
       <h2>Documents</h2>
       <p>Upload and manage the files in your knowledge base.</p>
+      <span class="cta-arrow">→</span>
     </a>
   </div>
   </div>

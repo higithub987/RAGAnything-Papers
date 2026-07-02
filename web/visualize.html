@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAG-Anything Visualize</title>
+<script>
+  (function () {
+    const saved = localStorage.getItem("ragTheme");
+    const theme = saved || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.dataset.theme = theme;
+  })();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/shared.css">
+<style>
+  .graph-container {
+    width: 100%;
+    height: 70vh;
+    min-height: 360px;
+    border: 1px solid var(--border-soft);
+    border-radius: 12px;
+    background: var(--surface-subtle);
+    overflow: hidden;
+  }
+  #graph-svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .graph-node-circle {
+    fill: var(--blue);
+    stroke: var(--surface);
+    stroke-width: 2px;
+    cursor: grab;
+  }
+  .graph-node-circle:active {
+    cursor: grabbing;
+  }
+  .graph-link {
+    stroke: var(--text-faint);
+    stroke-opacity: 0.6;
+    fill: none;
+  }
+  .graph-node-label {
+    fill: var(--text-muted);
+    font-size: 11px;
+    font-family: 'Inter', sans-serif;
+    pointer-events: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+  <nav class="nav">
+    <div class="nav-brand">
+      <a href="/" class="brand-icon" title="Home">RAG ▾</a>
+      <div class="brand-dropdown">
+        <a href="/documents.html">Documents</a>
+        <a href="/chat.html">Chat</a>
+        <a href="/visualize.html" class="active">Visualize</a>
+      </div>
+    </div>
+    <button type="button" id="theme-toggle" class="theme-toggle" title="Toggle dark mode">🌙</button>
+  </nav>
+  <div class="card">
+    <h1>Knowledge graph</h1>
+    <p class="subtitle">Explore how your documents relate to each other. Line thickness reflects how strongly two documents are related.</p>
+    <div class="graph-container" id="graph-container">
+      <svg id="graph-svg"></svg>
+    </div>
+    <p class="empty-state" id="empty-state" style="display: none;"></p>
+  </div>
+  </div>
+
+  <script src="/theme.js"></script>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script>
+    (async function () {
+      const containerEl = document.getElementById("graph-container");
+      const svgEl = document.getElementById("graph-svg");
+      const emptyStateEl = document.getElementById("empty-state");
+
+      function showEmpty(message) {
+        containerEl.style.display = "none";
+        emptyStateEl.textContent = message;
+        emptyStateEl.style.display = "block";
+      }
+
+      function truncate(name, max = 18) {
+        if (!name) return "";
+        return name.length > max ? name.slice(0, max - 1) + "…" : name;
+      }
+
+      function toGraph(pairs) {
+        const nodeMap = new Map();
+        const links = [];
+
+        for (const pair of pairs) {
+          if (!nodeMap.has(pair.doc_id)) {
+            nodeMap.set(pair.doc_id, { id: pair.doc_id, name: pair.file_name, degree: 0 });
+          }
+          if (!nodeMap.has(pair.related_doc_id)) {
+            nodeMap.set(pair.related_doc_id, { id: pair.related_doc_id, name: pair.related_file_name, degree: 0 });
+          }
+          nodeMap.get(pair.doc_id).degree++;
+          nodeMap.get(pair.related_doc_id).degree++;
+          links.push({ source: pair.doc_id, target: pair.related_doc_id, value: pair.score });
+        }
+
+        return { nodes: [...nodeMap.values()], links };
+      }
+
+      function renderGraph(nodes, links) {
+        const width = svgEl.clientWidth;
+        const height = svgEl.clientHeight;
+
+        const maxDegree = d3.max(nodes, (d) => d.degree) || 1;
+        const radiusScale = d3.scaleSqrt().domain([0, maxDegree]).range([10, 26]).clamp(true);
+        const radius = (d) => radiusScale(d.degree);
+
+        const scoreExtent = d3.extent(links, (d) => d.value);
+        const domainMin = scoreExtent[0];
+        const domainMax = scoreExtent[0] === scoreExtent[1] ? scoreExtent[0] + 0.01 : scoreExtent[1];
+        const strokeScale = d3.scaleLinear().domain([domainMin, domainMax]).range([1, 8]).clamp(true);
+
+        const svg = d3.select(svgEl);
+        const linkGroup = svg.append("g").attr("class", "links");
+        const nodeGroup = svg.append("g").attr("class", "nodes");
+
+        const linkSel = linkGroup
+          .selectAll("line")
+          .data(links)
+          .join("line")
+          .attr("class", "graph-link")
+          .attr("stroke-width", (d) => strokeScale(d.value));
+
+        const simulation = d3
+          .forceSimulation(nodes)
+          .force("link", d3.forceLink(links).id((d) => d.id).distance(120))
+          .force("charge", d3.forceManyBody().strength(-220))
+          .force("center", d3.forceCenter(width / 2, height / 2))
+          .force("collide", d3.forceCollide((d) => radius(d) + 6))
+          .on("tick", ticked);
+
+        const nodeSel = nodeGroup
+          .selectAll("g.node")
+          .data(nodes)
+          .join("g")
+          .attr("class", "node")
+          .call(drag(simulation));
+
+        nodeSel.append("circle").attr("class", "graph-node-circle").attr("r", radius);
+        nodeSel.append("title").text((d) => d.name);
+        nodeSel
+          .append("text")
+          .attr("class", "graph-node-label")
+          .attr("dy", (d) => radius(d) + 14)
+          .attr("text-anchor", "middle")
+          .text((d) => truncate(d.name));
+
+        function ticked() {
+          linkSel
+            .attr("x1", (d) => d.source.x)
+            .attr("y1", (d) => d.source.y)
+            .attr("x2", (d) => d.target.x)
+            .attr("y2", (d) => d.target.y);
+          nodeSel.attr("transform", (d) => `translate(${d.x},${d.y})`);
+        }
+
+        function drag(sim) {
+          function dragstarted(event, d) {
+            if (!event.active) sim.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+          }
+          function dragged(event, d) {
+            d.fx = event.x;
+            d.fy = event.y;
+          }
+          function dragended(event, d) {
+            if (!event.active) sim.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+          }
+          return d3.drag().on("start", dragstarted).on("drag", dragged).on("end", dragended);
+        }
+      }
+
+      let pairs;
+      try {
+        const response = await fetch("/documents/relatedness");
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.detail || `Request failed (${response.status})`);
+        }
+        pairs = await response.json();
+      } catch (err) {
+        showEmpty("Could not load the knowledge graph. Try refreshing the page.");
+        return;
+      }
+
+      if (!pairs.length) {
+        showEmpty("Not enough documents yet — upload at least two to see relationships.");
+        return;
+      }
+
+      const { nodes, links } = toGraph(pairs);
+      renderGraph(nodes, links);
+    })();
+  </script>
+</body>
+</html>

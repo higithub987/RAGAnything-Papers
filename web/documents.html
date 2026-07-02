@@ -11,17 +11,25 @@
     document.documentElement.dataset.theme = theme;
   })();
 </script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/shared.css">
 <style>
   .dropzone {
     border: 2px dashed var(--border);
-    border-radius: 8px;
-    padding: 28px 16px;
+    border-radius: 12px;
+    min-height: 120px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
     text-align: center;
     color: var(--text-muted);
     font-size: 14px;
     cursor: pointer;
-    transition: border-color 0.15s ease, background 0.15s ease;
+    transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
   }
   .dropzone:hover,
   .dropzone.dragover {
@@ -31,6 +39,25 @@
   }
   .dropzone strong {
     color: inherit;
+  }
+  .dropzone-icon {
+    font-size: 28px;
+    color: var(--text-faint);
+    margin-bottom: 6px;
+    transition: color 0.15s ease;
+    line-height: 1;
+  }
+  .dropzone:hover .dropzone-icon,
+  .dropzone.dragover .dropzone-icon {
+    color: var(--blue);
+  }
+  .dropzone p {
+    margin: 0;
+    font-size: 14px;
+  }
+  .dropzone-hint {
+    font-size: 12px !important;
+    color: var(--text-faint);
   }
   input[type="file"] {
     display: none;
@@ -128,12 +155,16 @@
     margin-top: 2px;
     display: block;
   }
+  tbody tr:hover td {
+    background: var(--surface-subtle);
+  }
   .badge {
     display: inline-block;
-    padding: 3px 10px;
+    padding: 4px 12px;
     border-radius: 999px;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
+    letter-spacing: 0.02em;
   }
   .badge.processing {
     background: var(--accent-light);
@@ -171,10 +202,11 @@
   <div class="page">
   <nav class="nav">
     <div class="nav-brand">
-      <a href="/" class="brand-icon" title="Home">RAG</a>
+      <a href="/" class="brand-icon" title="Home">RAG ▾</a>
       <div class="brand-dropdown">
         <a href="/documents.html" class="active">Documents</a>
         <a href="/chat.html">Chat</a>
+        <a href="/visualize.html">Visualize</a>
       </div>
     </div>
     <button type="button" id="theme-toggle" class="theme-toggle" title="Toggle dark mode">🌙</button>
@@ -184,7 +216,9 @@
     <p class="subtitle">Upload files into your RAG-Anything knowledge base.</p>
 
     <div class="dropzone" id="dropzone">
-      <strong>Click to browse</strong> or drag and drop files here
+      <span class="dropzone-icon">↑</span>
+      <p><strong>Click to browse</strong> or drag and drop files here</p>
+      <p class="dropzone-hint">PDF, DOCX, TXT and more</p>
     </div>
     <div class="progress-panel" id="progress-panel" style="display: none;"></div>
     <input type="file" id="file-input" multiple>

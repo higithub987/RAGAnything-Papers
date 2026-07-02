@@ -4,8 +4,9 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile
 
 from ..config import settings
-from ..models import DocumentTask
+from ..models import DocumentRelatedness, DocumentTask
 from ..rag_manager import get_rag, load_existing_documents, process_document_task
+from ..relatedness import compute_relatedness
 from ..task_store import create_task, delete_task, get_task, list_tasks
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -29,6 +30,11 @@ async def upload_document(file: UploadFile, background_tasks: BackgroundTasks):
 def list_documents():
     load_existing_documents()
     return list_tasks()
+
+
+@router.get("/relatedness", response_model=list[DocumentRelatedness])
+async def get_relatedness():
+    return await compute_relatedness()
 
 
 @router.get("/{task_id}", response_model=DocumentTask)

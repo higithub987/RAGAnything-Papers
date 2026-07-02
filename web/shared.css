@@ -13,7 +13,7 @@
   --bg: #f4f5f7;
   --surface: #ffffff;
   --surface-subtle: #f8fafc;
-  --card-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 4px 16px rgba(0, 0, 0, 0.08);
   --accent-soft-bg: #eff6ff;
   --accent-light: #dbeafe;
   --accent-text-strong: #1e3a8a;
@@ -45,7 +45,7 @@
   --bg: #16181d;
   --surface: #1f2128;
   --surface-subtle: #25272f;
-  --card-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.45);
   --accent-soft-bg: #1e2a44;
   --accent-light: #1e3a5f;
   --accent-text-strong: #93c5fd;
@@ -63,18 +63,22 @@
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   background: var(--bg);
   margin: 0;
   min-height: 100vh;
   display: flex;
   justify-content: center;
-  padding: 3vh 3vw;
+  align-items: flex-start;
+  padding: 28px 24px;
   box-sizing: border-box;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
 }
 
 .page {
   width: 100%;
+  margin: 0 auto;
 }
 
 .nav {
@@ -115,15 +119,17 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 42px;
-  height: 42px;
+  width: auto;
+  height: 38px;
+  padding: 0 14px;
   box-sizing: border-box;
   border-radius: 8px;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.06em;
   color: var(--text-strong);
   text-decoration: none;
+  white-space: nowrap;
   background: var(--surface);
   border: 1px solid var(--border);
   transition: background 0.15s ease;
@@ -145,12 +151,12 @@ body {
   left: 0;
   display: flex;
   flex-direction: column;
-  min-width: 140px;
+  min-width: 180px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   box-shadow: var(--card-shadow);
-  padding: 6px;
+  padding: 8px;
   opacity: 0;
   visibility: hidden;
   transform: translateY(-4px);
@@ -169,8 +175,8 @@ body {
   text-align: left;
   border: none;
   background: none;
-  padding: 8px 10px;
-  border-radius: 6px;
+  padding: 10px 14px;
+  border-radius: 7px;
   font-weight: 600;
   font-size: 14px;
   color: var(--text-strong);
@@ -207,7 +213,7 @@ body {
 
 .card {
   background: var(--surface);
-  border-radius: 12px;
+  border-radius: 16px;
   box-shadow: var(--card-shadow);
   padding: 32px;
   box-sizing: border-box;

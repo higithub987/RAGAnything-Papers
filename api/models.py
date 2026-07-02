@@ -25,6 +25,14 @@ class DocumentTask(BaseModel):
     progress_message: Optional[str] = None
 
 
+class DocumentRelatedness(BaseModel):
+    doc_id: str
+    file_name: str
+    related_doc_id: str
+    related_file_name: str
+    score: float
+
+
 class QueryRequest(BaseModel):
     query: str
     mode: str = "hybrid"
