@@ -17,13 +17,89 @@
 <link rel="stylesheet" href="/shared.css">
 <style>
   .graph-container {
+    position: relative;
     width: 100%;
     height: 70vh;
-    min-height: 360px;
+    min-height: 480px;
     border: 1px solid var(--border-soft);
     border-radius: 12px;
     background: var(--surface-subtle);
     overflow: hidden;
+  }
+  .connection-popover {
+    position: absolute;
+    max-width: 320px;
+    max-height: 320px;
+    overflow-y: auto;
+    padding: 12px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    box-shadow: var(--card-shadow);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text);
+    z-index: 20;
+  }
+  .connection-popover-section-title {
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-faint);
+    margin: 10px 0 4px;
+  }
+  .connection-popover-topic {
+    margin: 0 0 6px;
+  }
+  .connection-popover-topic-name {
+    font-weight: 600;
+    color: var(--text);
+  }
+  .connection-popover-topic-type {
+    color: var(--text-faint);
+    font-weight: 400;
+  }
+  .connection-popover-topic-desc,
+  .connection-popover-relation-desc {
+    color: var(--text-muted);
+    display: block;
+  }
+  .connection-popover-relation {
+    margin: 0 0 6px;
+  }
+  .connection-popover-relation-pair {
+    font-weight: 600;
+    color: var(--text);
+  }
+  .connection-popover-close {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-faint);
+    padding: 2px 4px;
+    line-height: 1;
+  }
+  .connection-popover-close:hover {
+    color: var(--text);
+  }
+  .connection-popover-title {
+    font-weight: 600;
+    color: var(--text);
+    margin: 0 16px 4px 0;
+  }
+  .connection-popover-score {
+    color: var(--blue-dark);
+    font-weight: 600;
+    margin: 0 0 6px;
+  }
+  .connection-popover-topics {
+    color: var(--text-muted);
+    margin: 0;
   }
   #graph-svg {
     width: 100%;
@@ -40,16 +116,35 @@
     cursor: grabbing;
   }
   .graph-link {
-    stroke: var(--text-faint);
-    stroke-opacity: 0.6;
+    stroke: var(--text-secondary);
+    stroke-linecap: round;
     fill: none;
+    transition: opacity 0.15s ease;
+  }
+  .graph-link.dimmed {
+    opacity: 0.55;
+  }
+  .graph-link-hit {
+    stroke: transparent;
+    stroke-width: 14px;
+    cursor: pointer;
+  }
+  .node {
+    transition: opacity 0.15s ease;
+  }
+  .node.dimmed {
+    opacity: 0.55;
   }
   .graph-node-label {
     fill: var(--text-muted);
-    font-size: 11px;
+    font-size: 13px;
     font-family: 'Inter', sans-serif;
     pointer-events: none;
     user-select: none;
+    paint-order: stroke;
+    stroke: var(--surface-subtle);
+    stroke-width: 3px;
+    stroke-linejoin: round;
   }
 </style>
 </head>
@@ -71,6 +166,7 @@
     <p class="subtitle">Explore how your documents relate to each other. Line thickness reflects how strongly two documents are related.</p>
     <div class="graph-container" id="graph-container">
       <svg id="graph-svg"></svg>
+      <div class="connection-popover" id="connection-popover" style="display: none;"></div>
     </div>
     <p class="empty-state" id="empty-state" style="display: none;"></p>
   </div>
@@ -83,6 +179,8 @@
       const containerEl = document.getElementById("graph-container");
       const svgEl = document.getElementById("graph-svg");
       const emptyStateEl = document.getElementById("empty-state");
+      const popoverEl = document.getElementById("connection-popover");
+      popoverEl.addEventListener("click", (event) => event.stopPropagation());
 
       function showEmpty(message) {
         containerEl.style.display = "none";
@@ -90,7 +188,14 @@
         emptyStateEl.style.display = "block";
       }
 
-      function truncate(name, max = 18) {
+      function escapeHtml(str) {
+        return String(str)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      }
+
+      function truncate(name, max = 22) {
         if (!name) return "";
         return name.length > max ? name.slice(0, max - 1) + "…" : name;
       }
@@ -108,15 +213,42 @@
           }
           nodeMap.get(pair.doc_id).degree++;
           nodeMap.get(pair.related_doc_id).degree++;
-          links.push({ source: pair.doc_id, target: pair.related_doc_id, value: pair.score });
+          links.push({
+            source: pair.doc_id,
+            target: pair.related_doc_id,
+            value: pair.score,
+            sharedTopics: pair.shared_topics || [],
+            sharedRelations: pair.shared_relations || [],
+          });
         }
 
         return { nodes: [...nodeMap.values()], links };
       }
 
       function renderGraph(nodes, links) {
+        const nodeCount = nodes.length;
+        const maxContainerHeight = Math.min(window.innerHeight * 0.85, 900);
+        const heightScale = d3
+          .scaleLinear()
+          .domain([2, 50])
+          .range([480, maxContainerHeight])
+          .clamp(true);
+        containerEl.style.height = `${heightScale(nodeCount)}px`;
+
         const width = svgEl.clientWidth;
         const height = svgEl.clientHeight;
+
+        const seedRadius = Math.min(width, height) * 0.38;
+        nodes.forEach((node, i) => {
+          const angle = (2 * Math.PI * i) / nodes.length - Math.PI / 2;
+          node.x = width / 2 + seedRadius * Math.cos(angle);
+          node.y = height / 2 + seedRadius * Math.sin(angle);
+        });
+
+        const linkDistanceScale = d3.scaleSqrt().domain([1, 1225]).range([180, 500]).clamp(true);
+        const chargeScale = d3.scaleLinear().domain([2, 50]).range([-220, -900]).clamp(true);
+        const linkDistance = linkDistanceScale(links.length);
+        const chargeStrength = chargeScale(nodeCount);
 
         const maxDegree = d3.max(nodes, (d) => d.degree) || 1;
         const radiusScale = d3.scaleSqrt().domain([0, maxDegree]).range([10, 26]).clamp(true);
@@ -126,22 +258,41 @@
         const domainMin = scoreExtent[0];
         const domainMax = scoreExtent[0] === scoreExtent[1] ? scoreExtent[0] + 0.01 : scoreExtent[1];
         const strokeScale = d3.scaleLinear().domain([domainMin, domainMax]).range([1, 8]).clamp(true);
+        const opacityScale = d3.scaleLinear().domain([domainMin, domainMax]).range([0.35, 0.95]).clamp(true);
 
         const svg = d3.select(svgEl);
         const linkGroup = svg.append("g").attr("class", "links");
         const nodeGroup = svg.append("g").attr("class", "nodes");
 
         const linkSel = linkGroup
-          .selectAll("line")
+          .selectAll("line.graph-link")
           .data(links)
           .join("line")
           .attr("class", "graph-link")
-          .attr("stroke-width", (d) => strokeScale(d.value));
+          .attr("stroke-width", (d) => strokeScale(d.value))
+          .attr("stroke-opacity", (d) => opacityScale(d.value));
+
+        let pinnedLink = null;
+
+        const linkHitSel = linkGroup
+          .selectAll("line.graph-link-hit")
+          .data(links)
+          .join("line")
+          .attr("class", "graph-link-hit")
+          .on("mouseenter", (event, d) => applyHighlight(d))
+          .on("mouseleave", () => applyHighlight(pinnedLink))
+          .on("click", (event, d) => {
+            event.stopPropagation();
+            pinnedLink = d;
+            applyHighlight(d);
+            showConnectionPopover(event, d);
+          });
 
         const simulation = d3
           .forceSimulation(nodes)
-          .force("link", d3.forceLink(links).id((d) => d.id).distance(120))
-          .force("charge", d3.forceManyBody().strength(-220))
+          .alphaDecay(0.015)
+          .force("link", d3.forceLink(links).id((d) => d.id).distance(linkDistance))
+          .force("charge", d3.forceManyBody().strength(chargeStrength))
           .force("center", d3.forceCenter(width / 2, height / 2))
           .force("collide", d3.forceCollide((d) => radius(d) + 6))
           .on("tick", ticked);
@@ -168,8 +319,94 @@
             .attr("y1", (d) => d.source.y)
             .attr("x2", (d) => d.target.x)
             .attr("y2", (d) => d.target.y);
+          linkHitSel
+            .attr("x1", (d) => d.source.x)
+            .attr("y1", (d) => d.source.y)
+            .attr("x2", (d) => d.target.x)
+            .attr("y2", (d) => d.target.y);
           nodeSel.attr("transform", (d) => `translate(${d.x},${d.y})`);
         }
+
+        function applyHighlight(target) {
+          if (!target) {
+            linkSel.classed("dimmed", false);
+            nodeSel.classed("dimmed", false);
+            return;
+          }
+          linkSel.classed("dimmed", (d) => d !== target);
+          nodeSel.classed("dimmed", (d) => d !== target.source && d !== target.target);
+        }
+
+        function truncateText(text, max = 100) {
+          if (!text) return "";
+          return text.length > max ? text.slice(0, max - 1) + "…" : text;
+        }
+
+        function renderTopics(topics) {
+          if (!topics.length) {
+            return '<p class="connection-popover-topics">No obvious shared topics</p>';
+          }
+          const items = topics
+            .map((t) => {
+              const typeText = t.entity_type ? ` <span class="connection-popover-topic-type">(${escapeHtml(t.entity_type)})</span>` : "";
+              const descText = t.description
+                ? `<span class="connection-popover-topic-desc">${escapeHtml(truncateText(t.description))}</span>`
+                : "";
+              return `<p class="connection-popover-topic"><span class="connection-popover-topic-name">${escapeHtml(t.name)}</span>${typeText}${descText}</p>`;
+            })
+            .join("");
+          return `<p class="connection-popover-section-title">Shared topics</p>${items}`;
+        }
+
+        function renderRelations(relations) {
+          if (!relations.length) return "";
+          const items = relations
+            .map((r) => {
+              const descText = r.description
+                ? `<span class="connection-popover-relation-desc">${escapeHtml(truncateText(r.description))}</span>`
+                : "";
+              return `<p class="connection-popover-relation"><span class="connection-popover-relation-pair">${escapeHtml(r.source)} &rarr; ${escapeHtml(r.target)}</span>${descText}</p>`;
+            })
+            .join("");
+          return `<p class="connection-popover-section-title">How they connect</p>${items}`;
+        }
+
+        function showConnectionPopover(event, d) {
+          const scoreText = `${Math.round(d.value * 100)}% related`;
+
+          popoverEl.innerHTML = `
+            <button type="button" class="connection-popover-close" aria-label="Close">&times;</button>
+            <p class="connection-popover-title">${escapeHtml(d.source.name)} &harr; ${escapeHtml(d.target.name)}</p>
+            <p class="connection-popover-score">${scoreText}</p>
+            ${renderTopics(d.sharedTopics)}
+            ${renderRelations(d.sharedRelations)}
+          `;
+          popoverEl.querySelector(".connection-popover-close").addEventListener("click", (e) => {
+            e.stopPropagation();
+            hideConnectionPopover();
+          });
+
+          popoverEl.style.display = "block";
+          const rect = containerEl.getBoundingClientRect();
+          const clickX = event.clientX - rect.left;
+          const clickY = event.clientY - rect.top;
+          const maxLeft = rect.width - popoverEl.offsetWidth - 8;
+          const maxTop = rect.height - popoverEl.offsetHeight - 8;
+          popoverEl.style.left = `${Math.max(8, Math.min(clickX + 12, maxLeft))}px`;
+          popoverEl.style.top = `${Math.max(8, Math.min(clickY + 12, maxTop))}px`;
+        }
+
+        function hideConnectionPopover() {
+          if (popoverEl.style.display === "none") return;
+          popoverEl.style.display = "none";
+          pinnedLink = null;
+          applyHighlight(null);
+        }
+
+        document.addEventListener("click", hideConnectionPopover);
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") hideConnectionPopover();
+        });
 
         function drag(sim) {
           function dragstarted(event, d) {

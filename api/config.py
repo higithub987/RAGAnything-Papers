@@ -23,13 +23,15 @@ class Settings(BaseSettings):
     output_dir: str = "./output"
 
     # Safety net: a stuck/hung parser (e.g. mineru) must not block uploads
-    # forever. The timeout scales with the uploaded file's size so large
-    # documents get the headroom they need without making small uploads
-    # wait as long as a worst-case multi-page PDF would. mineru's cold start
-    # alone (fresh subprocess + model load on every upload) measured ~7
-    # minutes for a single page in this environment, hence the floor.
-    document_processing_timeout_base_seconds: int = 1800
-    document_processing_timeout_per_mb_seconds: int = 60
+    # forever. Page count isn't known before parsing starts (office/text
+    # files are only converted to PDF partway through the pipeline, and
+    # reading real PDF page counts would mean adding pypdfium2 as a new core
+    # dependency just for this — see raganything/parser.py's OFFICE_FORMATS
+    # conversion). File size is instead used as an inexpensive proxy for page
+    # count: divide by an assumed average page size, then multiply by
+    # mineru's measured cold-start cost of ~7 minutes/page.
+    document_processing_kb_per_page: int = 200
+    document_processing_seconds_per_page: int = 420  # 7 minutes
     document_processing_timeout_max_seconds: int = 7200
 
     # How many documents may parse at once. 1 preserves today's serialized

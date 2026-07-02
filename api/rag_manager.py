@@ -379,17 +379,15 @@ async def ensure_rag_ready() -> None:
 
 
 def _compute_timeout_seconds(file_path: str) -> int:
-    """Scale the parse timeout with the uploaded file's size on disk.
+    """Scale the parse timeout with the uploaded file's estimated page count.
 
-    Raw file size is a cheap, dependency-free proxy for parse duration —
-    there's no existing page-count/complexity signal anywhere in
-    raganything/ or api/, and adding one (e.g. pypdfium2) would mean a new
-    core dependency just for this.
+    File size / assumed KB-per-page stands in for a real page count (see
+    config.py comment for why); the result is multiplied by mineru's
+    measured per-page cold-start cost.
     """
-    size_mb = Path(file_path).stat().st_size / (1024 * 1024)
-    scaled = settings.document_processing_timeout_base_seconds + (
-        size_mb * settings.document_processing_timeout_per_mb_seconds
-    )
+    size_kb = Path(file_path).stat().st_size / 1024
+    estimated_pages = max(1, size_kb / settings.document_processing_kb_per_page)
+    scaled = estimated_pages * settings.document_processing_seconds_per_page
     return min(int(scaled), settings.document_processing_timeout_max_seconds)
 
 

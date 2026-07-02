@@ -25,12 +25,26 @@ class DocumentTask(BaseModel):
     progress_message: Optional[str] = None
 
 
+class TopicDetail(BaseModel):
+    name: str
+    entity_type: str = ""
+    description: str = ""
+
+
+class RelationDetail(BaseModel):
+    source: str
+    target: str
+    description: str = ""
+
+
 class DocumentRelatedness(BaseModel):
     doc_id: str
     file_name: str
     related_doc_id: str
     related_file_name: str
     score: float
+    shared_topics: list[TopicDetail] = []
+    shared_relations: list[RelationDetail] = []
 
 
 class QueryRequest(BaseModel):
