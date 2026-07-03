@@ -106,6 +106,59 @@
     height: 100%;
     display: block;
   }
+  .graph-legend {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    padding: 8px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text-muted);
+    pointer-events: none;
+    z-index: 5;
+  }
+  .graph-legend-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .graph-legend-circle {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--blue);
+    flex: 0 0 auto;
+  }
+  .graph-legend-line {
+    display: inline-block;
+    width: 16px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--text-secondary);
+    flex: 0 0 auto;
+  }
+  .graph-reset-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    padding: 6px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-strong);
+    cursor: pointer;
+    z-index: 5;
+    transition: background 0.15s ease;
+  }
+  .graph-reset-btn:hover {
+    background: var(--bg);
+  }
   .graph-node-circle {
     fill: var(--blue);
     stroke: var(--surface);
@@ -167,6 +220,11 @@
     <div class="graph-container" id="graph-container">
       <svg id="graph-svg"></svg>
       <div class="connection-popover" id="connection-popover" style="display: none;"></div>
+      <button type="button" class="graph-reset-btn" id="graph-reset-btn" title="Reset view">Reset view</button>
+      <div class="graph-legend">
+        <div class="graph-legend-row"><span class="graph-legend-circle"></span> Circle size = number of connections</div>
+        <div class="graph-legend-row"><span class="graph-legend-line"></span> Line thickness/opacity = relatedness strength</div>
+      </div>
     </div>
     <p class="empty-state" id="empty-state" style="display: none;"></p>
   </div>
@@ -227,26 +285,27 @@
 
       function renderGraph(nodes, links) {
         const nodeCount = nodes.length;
-        const maxContainerHeight = Math.min(window.innerHeight * 0.85, 900);
-        const heightScale = d3
-          .scaleLinear()
-          .domain([2, 50])
-          .range([480, maxContainerHeight])
-          .clamp(true);
-        containerEl.style.height = `${heightScale(nodeCount)}px`;
+        const heightFraction = d3.scaleLinear().domain([2, 50]).range([0.55, 0.85]).clamp(true);
+        const targetHeight = Math.max(480, window.innerHeight * heightFraction(nodeCount));
+        containerEl.style.height = `${targetHeight}px`;
 
         const width = svgEl.clientWidth;
         const height = svgEl.clientHeight;
 
-        const seedRadius = Math.min(width, height) * 0.38;
-        nodes.forEach((node, i) => {
-          const angle = (2 * Math.PI * i) / nodes.length - Math.PI / 2;
-          node.x = width / 2 + seedRadius * Math.cos(angle);
-          node.y = height / 2 + seedRadius * Math.sin(angle);
-        });
+        function seedPositions() {
+          const seedRadius = Math.min(width, height) * 0.38;
+          nodes.forEach((node, i) => {
+            const angle = (2 * Math.PI * i) / nodes.length - Math.PI / 2;
+            node.x = width / 2 + seedRadius * Math.cos(angle);
+            node.y = height / 2 + seedRadius * Math.sin(angle);
+            node.fx = null;
+            node.fy = null;
+          });
+        }
+        seedPositions();
 
-        const linkDistanceScale = d3.scaleSqrt().domain([1, 1225]).range([180, 500]).clamp(true);
-        const chargeScale = d3.scaleLinear().domain([2, 50]).range([-220, -900]).clamp(true);
+        const linkDistanceScale = d3.scaleSqrt().domain([1, 1225]).range([240, 650]).clamp(true);
+        const chargeScale = d3.scaleLinear().domain([2, 50]).range([-280, -1100]).clamp(true);
         const linkDistance = linkDistanceScale(links.length);
         const chargeStrength = chargeScale(nodeCount);
 
@@ -261,8 +320,15 @@
         const opacityScale = d3.scaleLinear().domain([domainMin, domainMax]).range([0.35, 0.95]).clamp(true);
 
         const svg = d3.select(svgEl);
-        const linkGroup = svg.append("g").attr("class", "links");
-        const nodeGroup = svg.append("g").attr("class", "nodes");
+        const zoomLayer = svg.append("g").attr("class", "zoom-layer");
+        const linkGroup = zoomLayer.append("g").attr("class", "links");
+        const nodeGroup = zoomLayer.append("g").attr("class", "nodes");
+
+        const zoomBehavior = d3
+          .zoom()
+          .scaleExtent([0.3, 4])
+          .on("zoom", (event) => zoomLayer.attr("transform", event.transform));
+        svg.call(zoomBehavior);
 
         const linkSel = linkGroup
           .selectAll("line.graph-link")
@@ -272,19 +338,19 @@
           .attr("stroke-width", (d) => strokeScale(d.value))
           .attr("stroke-opacity", (d) => opacityScale(d.value));
 
-        let pinnedLink = null;
+        let pinned = null; // { type: "link"|"node", data } | null
 
         const linkHitSel = linkGroup
           .selectAll("line.graph-link-hit")
           .data(links)
           .join("line")
           .attr("class", "graph-link-hit")
-          .on("mouseenter", (event, d) => applyHighlight(d))
-          .on("mouseleave", () => applyHighlight(pinnedLink))
+          .on("mouseenter", (event, d) => highlightForLink(d))
+          .on("mouseleave", applyPinned)
           .on("click", (event, d) => {
             event.stopPropagation();
-            pinnedLink = d;
-            applyHighlight(d);
+            pinned = { type: "link", data: d };
+            highlightForLink(d);
             showConnectionPopover(event, d);
           });
 
@@ -302,7 +368,15 @@
           .data(nodes)
           .join("g")
           .attr("class", "node")
-          .call(drag(simulation));
+          .call(drag(simulation))
+          .on("mouseenter", (event, d) => highlightForNode(d))
+          .on("mouseleave", applyPinned)
+          .on("click", (event, d) => {
+            event.stopPropagation();
+            pinned = { type: "node", data: d };
+            highlightForNode(d);
+            showNodePopover(event, d);
+          });
 
         nodeSel.append("circle").attr("class", "graph-node-circle").attr("r", radius);
         nodeSel.append("title").text((d) => d.name);
@@ -327,14 +401,42 @@
           nodeSel.attr("transform", (d) => `translate(${d.x},${d.y})`);
         }
 
-        function applyHighlight(target) {
-          if (!target) {
+        function resetView() {
+          svg.transition().duration(400).call(zoomBehavior.transform, d3.zoomIdentity);
+          seedPositions();
+          simulation.alpha(1).restart();
+        }
+
+        document.getElementById("graph-reset-btn").addEventListener("click", resetView);
+
+        function highlightForLink(link) {
+          linkSel.classed("dimmed", (d) => d !== link);
+          nodeSel.classed("dimmed", (d) => d !== link.source && d !== link.target);
+        }
+
+        function highlightForNode(node) {
+          linkSel.classed("dimmed", (d) => d.source !== node && d.target !== node);
+          nodeSel.classed(
+            "dimmed",
+            (d) =>
+              d !== node &&
+              !links.some(
+                (l) =>
+                  (l.source === node && l.target === d) ||
+                  (l.target === node && l.source === d)
+              )
+          );
+        }
+
+        function applyPinned() {
+          if (!pinned) {
             linkSel.classed("dimmed", false);
             nodeSel.classed("dimmed", false);
-            return;
+          } else if (pinned.type === "link") {
+            highlightForLink(pinned.data);
+          } else {
+            highlightForNode(pinned.data);
           }
-          linkSel.classed("dimmed", (d) => d !== target);
-          nodeSel.classed("dimmed", (d) => d !== target.source && d !== target.target);
         }
 
         function truncateText(text, max = 100) {
@@ -342,9 +444,11 @@
           return text.length > max ? text.slice(0, max - 1) + "…" : text;
         }
 
-        function renderTopics(topics) {
+        function renderTopics(topics, options = {}) {
+          const emptyMessage = options.emptyMessage || "No obvious shared topics";
+          const sectionTitle = options.sectionTitle || "Shared topics";
           if (!topics.length) {
-            return '<p class="connection-popover-topics">No obvious shared topics</p>';
+            return `<p class="connection-popover-topics">${escapeHtml(emptyMessage)}</p>`;
           }
           const items = topics
             .map((t) => {
@@ -355,7 +459,7 @@
               return `<p class="connection-popover-topic"><span class="connection-popover-topic-name">${escapeHtml(t.name)}</span>${typeText}${descText}</p>`;
             })
             .join("");
-          return `<p class="connection-popover-section-title">Shared topics</p>${items}`;
+          return `<p class="connection-popover-section-title">${escapeHtml(sectionTitle)}</p>${items}`;
         }
 
         function renderRelations(relations) {
@@ -371,21 +475,15 @@
           return `<p class="connection-popover-section-title">How they connect</p>${items}`;
         }
 
-        function showConnectionPopover(event, d) {
-          const scoreText = `${Math.round(d.value * 100)}% related`;
-
-          popoverEl.innerHTML = `
-            <button type="button" class="connection-popover-close" aria-label="Close">&times;</button>
-            <p class="connection-popover-title">${escapeHtml(d.source.name)} &harr; ${escapeHtml(d.target.name)}</p>
-            <p class="connection-popover-score">${scoreText}</p>
-            ${renderTopics(d.sharedTopics)}
-            ${renderRelations(d.sharedRelations)}
-          `;
+        function renderPopoverShell(bodyHtml) {
+          popoverEl.innerHTML = `<button type="button" class="connection-popover-close" aria-label="Close">&times;</button>${bodyHtml}`;
           popoverEl.querySelector(".connection-popover-close").addEventListener("click", (e) => {
             e.stopPropagation();
-            hideConnectionPopover();
+            hidePopover();
           });
+        }
 
+        function positionPopover(event) {
           popoverEl.style.display = "block";
           const rect = containerEl.getBoundingClientRect();
           const clickX = event.clientX - rect.left;
@@ -396,16 +494,56 @@
           popoverEl.style.top = `${Math.max(8, Math.min(clickY + 12, maxTop))}px`;
         }
 
-        function hideConnectionPopover() {
-          if (popoverEl.style.display === "none") return;
-          popoverEl.style.display = "none";
-          pinnedLink = null;
-          applyHighlight(null);
+        function showConnectionPopover(event, d) {
+          const scoreText = `${Math.round(d.value * 100)}% related`;
+          renderPopoverShell(`
+            <p class="connection-popover-title">${escapeHtml(d.source.name)} &harr; ${escapeHtml(d.target.name)}</p>
+            <p class="connection-popover-score">${scoreText}</p>
+            ${renderTopics(d.sharedTopics)}
+            ${renderRelations(d.sharedRelations)}
+          `);
+          positionPopover(event);
         }
 
-        document.addEventListener("click", hideConnectionPopover);
+        async function showNodePopover(event, node) {
+          renderPopoverShell(`
+            <p class="connection-popover-title">${escapeHtml(node.name)}</p>
+            <p class="connection-popover-topics">Loading topics…</p>
+          `);
+          positionPopover(event);
+
+          let bodyHtml;
+          try {
+            const response = await fetch(`/documents/${encodeURIComponent(node.id)}/topics`);
+            if (!response.ok) throw new Error("request failed");
+            const data = await response.json();
+            bodyHtml = renderTopics(data.topics || [], {
+              emptyMessage: "No topics extracted for this document",
+              sectionTitle: "Topics",
+            });
+          } catch (err) {
+            bodyHtml = '<p class="connection-popover-topics">Could not load topics.</p>';
+          }
+
+          // The user may have clicked something else before this fetch resolved --
+          // don't clobber whatever popover is showing now with a stale result.
+          if (!pinned || pinned.type !== "node" || pinned.data !== node) return;
+          renderPopoverShell(`
+            <p class="connection-popover-title">${escapeHtml(node.name)}</p>
+            ${bodyHtml}
+          `);
+        }
+
+        function hidePopover() {
+          if (popoverEl.style.display === "none") return;
+          popoverEl.style.display = "none";
+          pinned = null;
+          applyPinned();
+        }
+
+        document.addEventListener("click", hidePopover);
         document.addEventListener("keydown", (event) => {
-          if (event.key === "Escape") hideConnectionPopover();
+          if (event.key === "Escape") hidePopover();
         });
 
         function drag(sim) {

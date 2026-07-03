@@ -1,6 +1,8 @@
+from typing import Optional
+
 import numpy as np
 
-from .models import DocumentRelatedness, RelationDetail, TaskStatus, TopicDetail
+from .models import DocumentRelatedness, DocumentTopics, RelationDetail, TaskStatus, TopicDetail
 from .rag_manager import get_rag
 from .task_store import list_tasks
 
@@ -149,3 +151,28 @@ async def compute_relatedness() -> list[DocumentRelatedness]:
 
     results.sort(key=lambda r: r.score, reverse=True)
     return results
+
+
+async def get_document_topics(doc_id: str) -> Optional[DocumentTopics]:
+    """A single document's own extracted topics, for the node-click detail popover."""
+    tasks = [t for t in list_tasks() if t.doc_id == doc_id]
+    if not tasks:
+        return None
+    file_name = tasks[0].file_name
+
+    lightrag = get_rag().lightrag
+    entity_result = await lightrag.full_entities.get_by_id(doc_id)
+    entity_names = sorted((entity_result or {}).get("entity_names") or [])[:15]
+    if not entity_names:
+        return DocumentTopics(doc_id=doc_id, file_name=file_name, topics=[])
+
+    node_data = await lightrag.chunk_entity_relation_graph.get_nodes_batch(entity_names)
+    topics = [
+        TopicDetail(
+            name=name,
+            entity_type=(node_data.get(name) or {}).get("entity_type", ""),
+            description=(node_data.get(name) or {}).get("description", ""),
+        )
+        for name in entity_names
+    ]
+    return DocumentTopics(doc_id=doc_id, file_name=file_name, topics=topics)

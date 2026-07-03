@@ -7,9 +7,9 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile
 
 from ..config import settings
-from ..models import DocumentRelatedness, DocumentTask
+from ..models import DocumentRelatedness, DocumentTask, DocumentTopics
 from ..rag_manager import get_rag, load_existing_documents, process_document_task
-from ..relatedness import compute_relatedness
+from ..relatedness import compute_relatedness, get_document_topics
 from ..task_store import create_task, delete_task, get_task, list_tasks
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -65,6 +65,14 @@ def list_documents():
 @router.get("/relatedness", response_model=list[DocumentRelatedness])
 async def get_relatedness():
     return await compute_relatedness()
+
+
+@router.get("/{doc_id}/topics", response_model=DocumentTopics)
+async def get_document_topic_detail(doc_id: str):
+    topics = await get_document_topics(doc_id)
+    if topics is None:
+        raise HTTPException(status_code=404, detail=f"Document {doc_id!r} not found")
+    return topics
 
 
 @router.get("/{task_id}", response_model=DocumentTask)

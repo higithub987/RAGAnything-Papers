@@ -47,6 +47,12 @@ class DocumentRelatedness(BaseModel):
     shared_relations: list[RelationDetail] = []
 
 
+class DocumentTopics(BaseModel):
+    doc_id: str
+    file_name: str
+    topics: list[TopicDetail] = []
+
+
 class QueryRequest(BaseModel):
     query: str
     mode: str = "hybrid"

@@ -196,6 +196,31 @@
     background: var(--danger-bg-strong);
     color: var(--danger-text);
   }
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    max-width: 320px;
+    padding: 12px 16px;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.5;
+    box-shadow: var(--card-shadow);
+    z-index: 100;
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    pointer-events: none;
+  }
+  .toast.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .toast.error {
+    background: var(--danger-bg-strong);
+    color: var(--danger-text);
+    border: 1px solid var(--danger-border);
+  }
 </style>
 </head>
 <body>
@@ -237,6 +262,7 @@
     </table>
     <p class="empty-state" id="empty-state">No documents yet — upload one to get started.</p>
   </div>
+  <div class="toast" id="toast"></div>
   </div>
 
   <script src="/theme.js"></script>
@@ -248,6 +274,17 @@
     const emptyState = document.getElementById("empty-state");
     const uploadStatus = document.getElementById("upload-status");
     const progressPanel = document.getElementById("progress-panel");
+    const toastEl = document.getElementById("toast");
+    let toastTimer = null;
+
+    function showToast(message, type = "error") {
+      toastEl.textContent = message;
+      toastEl.className = `toast visible ${type}`;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        toastEl.classList.remove("visible");
+      }, 4000);
+    }
 
     // task_id -> DocumentTask, mirrors the server's task list exactly.
     const taskCache = new Map();
@@ -413,7 +450,7 @@
         ensurePolling();
       } else {
         const data = await response.json().catch(() => ({}));
-        alert(`Failed to upload ${file.name}: ${data.detail || response.status}`);
+        showToast(`Failed to upload ${file.name}: ${data.detail || response.status}`);
       }
     }
 
@@ -459,7 +496,7 @@
         render();
       } else {
         const data = await response.json().catch(() => ({}));
-        alert(`Failed to delete document: ${data.detail || response.status}`);
+        showToast(`Failed to delete document: ${data.detail || response.status}`);
       }
     });
 
