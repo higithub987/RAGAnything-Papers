@@ -101,6 +101,33 @@
     color: var(--text-muted);
     margin: 0;
   }
+  .connection-popover-edit {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 8px;
+  }
+  .connection-popover-edit .connection-popover-score {
+    margin: 0;
+    white-space: nowrap;
+  }
+  .connection-popover-slider {
+    flex: 1 1 auto;
+    min-width: 90px;
+    accent-color: var(--blue);
+    cursor: pointer;
+  }
+  .connection-popover-number {
+    flex: 0 0 auto;
+    width: 3.5em;
+    padding: 2px 4px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font: inherit;
+    text-align: right;
+  }
   #graph-svg {
     width: 100%;
     height: 100%;
@@ -240,6 +267,8 @@
       const popoverEl = document.getElementById("connection-popover");
       popoverEl.addEventListener("click", (event) => event.stopPropagation());
 
+      const RELATEDNESS_THRESHOLD = 0.35;
+
       function showEmpty(message) {
         containerEl.style.display = "none";
         emptyStateEl.textContent = message;
@@ -262,20 +291,26 @@
         const nodeMap = new Map();
         const links = [];
 
+        function ensureNode(id, name) {
+          if (!nodeMap.has(id)) {
+            nodeMap.set(id, { id, name, degree: 0 });
+          }
+        }
+
         for (const pair of pairs) {
-          if (!nodeMap.has(pair.doc_id)) {
-            nodeMap.set(pair.doc_id, { id: pair.doc_id, name: pair.file_name, degree: 0 });
-          }
-          if (!nodeMap.has(pair.related_doc_id)) {
-            nodeMap.set(pair.related_doc_id, { id: pair.related_doc_id, name: pair.related_file_name, degree: 0 });
-          }
+          ensureNode(pair.doc_id, pair.file_name);
+          ensureNode(pair.related_doc_id, pair.related_file_name);
+
+          const sharedTopics = pair.shared_topics || [];
+          if (!sharedTopics.length && pair.score < RELATEDNESS_THRESHOLD) continue;
+
           nodeMap.get(pair.doc_id).degree++;
           nodeMap.get(pair.related_doc_id).degree++;
           links.push({
             source: pair.doc_id,
             target: pair.related_doc_id,
             value: pair.score,
-            sharedTopics: pair.shared_topics || [],
+            sharedTopics,
             sharedRelations: pair.shared_relations || [],
           });
         }
@@ -292,37 +327,50 @@
         const width = svgEl.clientWidth;
         const height = svgEl.clientHeight;
 
+        const maxDegree = d3.max(nodes, (d) => d.degree) || 1;
+        const radiusFactorScale = d3.scaleLinear().domain([600, 1400]).range([0.85, 1.4]).clamp(true);
+        const radiusFactor = radiusFactorScale(Math.min(window.innerWidth, window.innerHeight));
+        const radiusScale = d3
+          .scaleSqrt()
+          .domain([0, maxDegree])
+          .range([10 * radiusFactor, 26 * radiusFactor])
+          .clamp(true);
+        nodes.forEach((d) => { d.r = radiusScale(d.degree); }); // fixed per node; reused by circle, label, collide, clamp, seed
+        const radius = (d) => d.r;
+
         function seedPositions() {
-          const seedRadius = Math.min(width, height) * 0.38;
+          const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+          const avgRadius = d3.mean(nodes, radius) || 20;
+          const spacing = avgRadius * 2.2;
+          const idealRadius = spacing * Math.sqrt(nodes.length / Math.PI);
+          const discRadius = Math.min(idealRadius, Math.max(Math.min(width, height) / 2 - (avgRadius + 16), 40));
+
           nodes.forEach((node, i) => {
-            const angle = (2 * Math.PI * i) / nodes.length - Math.PI / 2;
-            node.x = width / 2 + seedRadius * Math.cos(angle);
-            node.y = height / 2 + seedRadius * Math.sin(angle);
+            const r = discRadius * Math.sqrt((i + 0.5) / nodes.length);
+            const theta = i * goldenAngle;
+            node.x = width / 2 + r * Math.cos(theta);
+            node.y = height / 2 + r * Math.sin(theta);
             node.fx = null;
             node.fy = null;
           });
         }
-        seedPositions();
 
         const linkDistanceScale = d3.scaleSqrt().domain([1, 1225]).range([240, 650]).clamp(true);
-        const chargeScale = d3.scaleLinear().domain([2, 50]).range([-280, -1100]).clamp(true);
+        const chargeScale = d3.scaleLinear().domain([2, 50]).range([-420, -1600]).clamp(true);
         const linkDistance = linkDistanceScale(links.length);
         const chargeStrength = chargeScale(nodeCount);
 
-        const maxDegree = d3.max(nodes, (d) => d.degree) || 1;
-        const radiusScale = d3.scaleSqrt().domain([0, maxDegree]).range([10, 26]).clamp(true);
-        const radius = (d) => radiusScale(d.degree);
-
         const scoreExtent = d3.extent(links, (d) => d.value);
-        const domainMin = scoreExtent[0];
+        const domainMin = Math.min(RELATEDNESS_THRESHOLD, scoreExtent[0]);
         const domainMax = scoreExtent[0] === scoreExtent[1] ? scoreExtent[0] + 0.01 : scoreExtent[1];
         const strokeScale = d3.scaleLinear().domain([domainMin, domainMax]).range([1, 8]).clamp(true);
         const opacityScale = d3.scaleLinear().domain([domainMin, domainMax]).range([0.35, 0.95]).clamp(true);
 
         const svg = d3.select(svgEl);
         const zoomLayer = svg.append("g").attr("class", "zoom-layer");
-        const linkGroup = zoomLayer.append("g").attr("class", "links");
-        const nodeGroup = zoomLayer.append("g").attr("class", "nodes");
+        const entranceLayer = zoomLayer.append("g").attr("class", "entrance-layer");
+        const linkGroup = entranceLayer.append("g").attr("class", "links");
+        const nodeGroup = entranceLayer.append("g").attr("class", "nodes");
 
         const zoomBehavior = d3
           .zoom()
@@ -330,21 +378,26 @@
           .on("zoom", (event) => zoomLayer.attr("transform", event.transform));
         svg.call(zoomBehavior);
 
-        const linkSel = linkGroup
-          .selectAll("line.graph-link")
-          .data(links)
-          .join("line")
-          .attr("class", "graph-link")
-          .attr("stroke-width", (d) => strokeScale(d.value))
-          .attr("stroke-opacity", (d) => opacityScale(d.value));
+        // A link's displayed strength is its computed score unless the user has
+        // tweaked it (session-only override lives on the link object as `override`).
+        const MIN_STROKE = 1; // px  -- floor so a low edit stays a visible hairline
+        const MIN_OPACITY = 0.35; //  -- floor so a low edit stays visible
+        const linkValue = (d) => (d.override != null ? d.override : d.value);
+        function applyLinkVisual(sel) {
+          sel
+            .attr("stroke-width", (d) => Math.max(MIN_STROKE, strokeScale(linkValue(d))))
+            .attr("stroke-opacity", (d) => Math.max(MIN_OPACITY, opacityScale(linkValue(d))));
+        }
+
+        function joinLinks(className) {
+          return linkGroup.selectAll(`line.${className}`).data(links).join("line").attr("class", className);
+        }
+        const linkSel = joinLinks("graph-link");
+        applyLinkVisual(linkSel);
 
         let pinned = null; // { type: "link"|"node", data } | null
 
-        const linkHitSel = linkGroup
-          .selectAll("line.graph-link-hit")
-          .data(links)
-          .join("line")
-          .attr("class", "graph-link-hit")
+        const linkHitSel = joinLinks("graph-link-hit")
           .on("mouseenter", (event, d) => highlightForLink(d))
           .on("mouseleave", applyPinned)
           .on("click", (event, d) => {
@@ -354,21 +407,11 @@
             showConnectionPopover(event, d);
           });
 
-        const simulation = d3
-          .forceSimulation(nodes)
-          .alphaDecay(0.015)
-          .force("link", d3.forceLink(links).id((d) => d.id).distance(linkDistance))
-          .force("charge", d3.forceManyBody().strength(chargeStrength))
-          .force("center", d3.forceCenter(width / 2, height / 2))
-          .force("collide", d3.forceCollide((d) => radius(d) + 6))
-          .on("tick", ticked);
-
         const nodeSel = nodeGroup
           .selectAll("g.node")
           .data(nodes)
           .join("g")
           .attr("class", "node")
-          .call(drag(simulation))
           .on("mouseenter", (event, d) => highlightForNode(d))
           .on("mouseleave", applyPinned)
           .on("click", (event, d) => {
@@ -387,24 +430,98 @@
           .attr("text-anchor", "middle")
           .text((d) => truncate(d.name));
 
-        function ticked() {
-          linkSel
+        nodeSel.each(function (d) {
+          d.labelHalfWidth = this.querySelector(".graph-node-label").getBBox().width / 2;
+        });
+
+        // Wide, short container: pull harder vertically, softer horizontally, so a
+        // weakly-connected node drifts into the roomy left/right margins instead of
+        // shooting off the short top/bottom edge. Clamp the ratio so extreme aspect
+        // ratios can't make one axis pathologically weak.
+        const aspect = Math.min(Math.max(width / height, 1), 2.5);
+        const centerStrength = 0.03;
+        const strengthX = centerStrength / Math.sqrt(aspect);
+        const strengthY = centerStrength * Math.sqrt(aspect);
+
+        // Leaf/near-isolated nodes get pinned toward the vertical midline so their one
+        // long link can only stretch them out to the left/right (into the wide side
+        // margins) rather than off the short top/bottom edge. Well-connected hubs keep
+        // the gentle base centering so the cluster isn't flattened.
+        const vPinScale = d3.scaleLinear().domain([1, 4]).range([0.30, strengthY]).clamp(true);
+
+        const simulation = d3
+          .forceSimulation(nodes)
+          .alphaDecay(0.015)
+          .velocityDecay(0.55)
+          .force("link", d3.forceLink(links).id((d) => d.id).distance(linkDistance))
+          .force("charge", d3.forceManyBody().strength(chargeStrength).distanceMin(30))
+          .force("x", d3.forceX(width / 2).strength(strengthX))
+          .force("y", d3.forceY(height / 2).strength((d) => vPinScale(d.degree)))
+          .force(
+            "collide",
+            d3.forceCollide((d) => Math.max(radius(d) + 16, (d.labelHalfWidth || 0) + 10)).iterations(2)
+          )
+          .on("tick", ticked);
+
+        nodeSel.call(drag(simulation));
+        simulation.stop(); // deploy() drives the layout; don't paint the un-settled seed
+
+        function clampNodes() {
+          nodes.forEach((d) => {
+            const padX = Math.max(radius(d), d.labelHalfWidth || 0) + 6;
+            const padTop = radius(d) + 6;
+            const padBottom = radius(d) + 22; // label sits below the circle
+            d.x = Math.max(padX, Math.min(width - padX, d.x));
+            d.y = Math.max(padTop, Math.min(height - padBottom, d.y));
+          });
+        }
+        function positionLine(sel) {
+          sel
             .attr("x1", (d) => d.source.x)
             .attr("y1", (d) => d.source.y)
             .attr("x2", (d) => d.target.x)
             .attr("y2", (d) => d.target.y);
-          linkHitSel
-            .attr("x1", (d) => d.source.x)
-            .attr("y1", (d) => d.source.y)
-            .attr("x2", (d) => d.target.x)
-            .attr("y2", (d) => d.target.y);
+        }
+        function draw() {
+          positionLine(linkSel);
+          positionLine(linkHitSel);
           nodeSel.attr("transform", (d) => `translate(${d.x},${d.y})`);
+        }
+        function ticked() { clampNodes(); draw(); } // live path (drags) still clamps + paints
+
+        function entranceTransform(s) {
+          const cx = width / 2, cy = height / 2;
+          return `translate(${cx},${cy}) scale(${s}) translate(${-cx},${-cy})`;
+        }
+        function deploy() {
+          seedPositions();
+          simulation.alpha(1).stop();
+          // Cool to a near-settled alpha rather than all the way to alphaMin (~457 ticks):
+          // the layout is visually converged well before then, so this drops ~40% of the
+          // per-tick force work with no visible difference. collide.iterations(2) still
+          // runs each tick, so overlap stays resolved.
+          const SETTLE_ALPHA = 0.02;
+          const ticks = Math.ceil(Math.log(SETTLE_ALPHA) / Math.log(1 - simulation.alphaDecay()));
+          for (let i = 0; i < ticks; i++) { simulation.tick(); clampNodes(); } // settle, no paint
+          draw(); // paint final layout once
+          entranceLayer
+            .interrupt()
+            .attr("opacity", 0)
+            .attr("transform", entranceTransform(0.94))
+            .transition().duration(600).ease(d3.easeCubicOut)
+            .attr("opacity", 1)
+            .attrTween("transform", () => {
+              const i = d3.interpolateNumber(0.94, 1);
+              return (t) => entranceTransform(i(t));
+            });
         }
 
         function resetView() {
+          links.forEach((l) => { delete l.override; });
+          applyLinkVisual(linkSel);
+          hidePopover(); // close any open editor so it can't linger showing a stale value
           svg.transition().duration(400).call(zoomBehavior.transform, d3.zoomIdentity);
-          seedPositions();
-          simulation.alpha(1).restart();
+          deploy();
         }
 
         document.getElementById("graph-reset-btn").addEventListener("click", resetView);
@@ -495,13 +612,37 @@
         }
 
         function showConnectionPopover(event, d) {
-          const scoreText = `${Math.round(d.value * 100)}% related`;
+          const pct = Math.round(linkValue(d) * 100);
           renderPopoverShell(`
             <p class="connection-popover-title">${escapeHtml(d.source.name)} &harr; ${escapeHtml(d.target.name)}</p>
-            <p class="connection-popover-score">${scoreText}</p>
+            <div class="connection-popover-edit">
+              <input type="range" class="connection-popover-slider" min="0" max="100" step="1" value="${pct}" aria-label="Relatedness percent" />
+              <input type="number" class="connection-popover-number" min="0" max="100" step="1" value="${pct}" aria-label="Relatedness percent" />
+              <span class="connection-popover-score">% related</span>
+            </div>
             ${renderTopics(d.sharedTopics)}
             ${renderRelations(d.sharedRelations)}
           `);
+
+          const sliderEl = popoverEl.querySelector(".connection-popover-slider");
+          const numberEl = popoverEl.querySelector(".connection-popover-number");
+
+          // Editing only mutates the override + redraws this one link. It deliberately
+          // does NOT re-run toGraph / re-filter `links` / remove DOM, so a connection
+          // dragged below the 0.35 threshold stays on screen (see MIN_STROKE/MIN_OPACITY).
+          function applyEdit(rawValue) {
+            let next = Math.round(Number(rawValue));
+            if (!Number.isFinite(next)) next = 0;
+            next = Math.max(0, Math.min(100, next));
+            sliderEl.value = String(next);
+            numberEl.value = String(next);
+            d.override = next / 100;
+            applyLinkVisual(linkSel.filter((l) => l === d));
+          }
+
+          sliderEl.addEventListener("input", (e) => applyEdit(e.target.value));
+          numberEl.addEventListener("input", (e) => applyEdit(e.target.value));
+
           positionPopover(event);
         }
 
@@ -558,11 +699,11 @@
           }
           function dragended(event, d) {
             if (!event.active) sim.alphaTarget(0);
-            d.fx = null;
-            d.fy = null;
           }
           return d3.drag().on("start", dragstarted).on("drag", dragged).on("end", dragended);
         }
+
+        deploy();
       }
 
       let pairs;
