@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 
@@ -12,11 +13,38 @@ from ..models import (
     QueryRequest,
     QueryResponse,
 )
-from ..rag_manager import condense_history, get_rag
+from ..rag_manager import (
+    condense_history,
+    get_rag,
+    resolve_thinking,
+    synthesis_thinking,
+)
 from raganything.utils import strip_thinking_tags
 
 router = APIRouter(prefix="/query", tags=["query"])
 logger = logging.getLogger(__name__)
+
+# Strong refs to in-flight background condense tasks so they aren't GC'd mid-run.
+_background_tasks: set = set()
+
+
+def _schedule_condense(session) -> None:
+    """Summarize aged-out turns AFTER a turn is recorded, off the query's
+    critical path, so a chat's next answer starts streaming without waiting on
+    summarization LLM round-trips. Chat use is sequential per session, so the
+    at-most-one background condense finishes before the following query in
+    practice; if it hasn't, that query just sends a slightly longer history.
+    """
+
+    async def _run():
+        try:
+            await session_store.condense_aged_out_turns(session)
+        except Exception:
+            logger.exception("Background history condense failed")
+
+    task = asyncio.create_task(_run())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 # Longest opening/closing tag we filter, minus one: how many trailing
 # characters of a not-yet-resolved buffer must be held back in case a tag is
@@ -136,16 +164,17 @@ async def text_query(request: QueryRequest):
             session = session_store.get_session(request.session_id)
             if session is None:
                 raise HTTPException(status_code=404, detail="Chat session not found")
-            await session_store.condense_aged_out_turns(session)
             kwargs["conversation_history"] = session_store.build_conversation_history(
                 session
             )
         elif request.conversation_history:
             kwargs["conversation_history"] = request.conversation_history
+        synthesis_thinking.set(resolve_thinking(request.thinking, request.query))
         answer = await get_rag().aquery(request.query, mode=request.mode, **kwargs)
         clean_answer = strip_thinking_tags(answer)
         if session is not None:
             session_store.add_turn(session, request.query, clean_answer)
+            _schedule_condense(session)
         return QueryResponse(
             answer=clean_answer, query=request.query, mode=request.mode
         )
@@ -168,6 +197,7 @@ async def condense_history_endpoint(request: CondenseHistoryRequest):
 async def multimodal_query(request: MultimodalQueryRequest):
     try:
         content = _to_multimodal_content(request)
+        synthesis_thinking.set(resolve_thinking(request.thinking, request.query))
         answer = await get_rag().aquery_with_multimodal(
             request.query,
             multimodal_content=content,
@@ -185,12 +215,22 @@ async def _stream_and_record(chunks, session, query: str):
 
     The route can't know the final answer text until streaming completes, so
     the turn is appended to the session only after the last chunk is yielded.
+
+    The recording runs in a ``finally`` so that a client disconnect mid-stream
+    (e.g. the user navigates to another tab, which reloads the page and aborts
+    the request) still persists whatever was generated instead of dropping the
+    turn entirely. ``add_turn`` runs exactly once, whether the stream completed
+    normally or was cancelled.
     """
     parts = []
-    async for chunk in chunks:
-        parts.append(chunk)
-        yield chunk
-    session_store.add_turn(session, query, "".join(parts))
+    try:
+        async for chunk in chunks:
+            parts.append(chunk)
+            yield chunk
+    finally:
+        if parts:
+            session_store.add_turn(session, query, "".join(parts))
+            _schedule_condense(session)
 
 
 @router.post("/stream")
@@ -202,14 +242,19 @@ async def text_query_stream(request: QueryRequest):
             session = session_store.get_session(request.session_id)
             if session is None:
                 raise HTTPException(status_code=404, detail="Chat session not found")
-            await session_store.condense_aged_out_turns(session)
             kwargs["conversation_history"] = session_store.build_conversation_history(
                 session
             )
         elif request.conversation_history:
             kwargs["conversation_history"] = request.conversation_history
 
+        thinking = resolve_thinking(request.thinking, request.query)
+
         async def make_result():
+            # Set inside make_result so the flag is active on both the initial
+            # call and the retry path -- the latter runs from _stream_result in
+            # the StreamingResponse context, after this route has returned.
+            synthesis_thinking.set(thinking)
             return await get_rag().aquery(
                 request.query, mode=request.mode, stream=True, **kwargs
             )
@@ -229,8 +274,10 @@ async def text_query_stream(request: QueryRequest):
 async def multimodal_query_stream(request: MultimodalQueryRequest):
     try:
         content = _to_multimodal_content(request)
+        thinking = resolve_thinking(request.thinking, request.query)
 
         async def make_result():
+            synthesis_thinking.set(thinking)
             return await get_rag().aquery_with_multimodal(
                 request.query,
                 multimodal_content=content,

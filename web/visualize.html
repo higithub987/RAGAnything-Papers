@@ -15,6 +15,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/shared.css">
+<link rel="icon" href="data:,">
 <style>
   .graph-container {
     position: relative;
@@ -168,10 +169,15 @@
     background: var(--text-secondary);
     flex: 0 0 auto;
   }
-  .graph-reset-btn {
+  .graph-controls {
     position: absolute;
     top: 10px;
     right: 10px;
+    display: flex;
+    gap: 8px;
+    z-index: 5;
+  }
+  .graph-reset-btn {
     padding: 6px 12px;
     background: var(--surface);
     border: 1px solid var(--border);
@@ -180,11 +186,30 @@
     font-weight: 600;
     color: var(--text-strong);
     cursor: pointer;
-    z-index: 5;
     transition: background 0.15s ease;
   }
   .graph-reset-btn:hover {
     background: var(--bg);
+  }
+  .connection-popover-apply {
+    padding: 3px 10px;
+    background: var(--blue);
+    border: 1px solid var(--blue);
+    border-radius: 6px;
+    font: inherit;
+    font-weight: 600;
+    color: #fff;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: opacity 0.15s ease;
+  }
+  .connection-popover-apply:hover {
+    opacity: 0.9;
+  }
+  .connection-popover-apply.applied {
+    background: var(--surface);
+    color: var(--blue-dark);
+    cursor: default;
   }
   .graph-node-circle {
     fill: var(--blue);
@@ -234,8 +259,8 @@
     <div class="nav-brand">
       <a href="/" class="brand-icon" title="Home">RAG ▾</a>
       <div class="brand-dropdown">
-        <a href="/documents.html">Documents</a>
         <a href="/chat.html">Chat</a>
+        <a href="/documents.html">Documents</a>
         <a href="/visualize.html" class="active">Visualize</a>
       </div>
     </div>
@@ -247,7 +272,10 @@
     <div class="graph-container" id="graph-container">
       <svg id="graph-svg"></svg>
       <div class="connection-popover" id="connection-popover" style="display: none;"></div>
-      <button type="button" class="graph-reset-btn" id="graph-reset-btn" title="Reset view">Reset view</button>
+      <div class="graph-controls">
+        <button type="button" class="graph-reset-btn" id="graph-reset-edits-btn" title="Revert all committed relatedness edits">Reset edits</button>
+        <button type="button" class="graph-reset-btn" id="graph-reset-btn" title="Re-center the graph">Reset view</button>
+      </div>
       <div class="graph-legend">
         <div class="graph-legend-row"><span class="graph-legend-circle"></span> Circle size = number of connections</div>
         <div class="graph-legend-row"><span class="graph-legend-line"></span> Line thickness/opacity = relatedness strength</div>
@@ -318,7 +346,7 @@
         return { nodes: [...nodeMap.values()], links };
       }
 
-      function renderGraph(nodes, links) {
+      function renderGraph(nodes, links, initialOverrides = {}) {
         const nodeCount = nodes.length;
         const heightFraction = d3.scaleLinear().domain([2, 50]).range([0.55, 0.85]).clamp(true);
         const targetHeight = Math.max(480, window.innerHeight * heightFraction(nodeCount));
@@ -516,15 +544,59 @@
             });
         }
 
-        function resetView() {
-          links.forEach((l) => { delete l.override; });
+        // Committed relatedness overrides (server-side), keyed "docA::docB".
+        // Seeded from the initial load so the popover "Applied ✓" badge and the
+        // drawn graph both reflect edits the user previously applied to search.
+        let overridesMap = initialOverrides || {};
+        const pairKey = (a, b) => (a <= b ? `${a}::${b}` : `${b}::${a}`);
+        // A link's source/target are string ids until the force sim resolves
+        // them to node objects, and node objects afterwards -- handle both.
+        const linkEndId = (x) => (x && typeof x === "object" ? x.id : x);
+        async function refreshOverrides() {
+          try {
+            const r = await fetch("/documents/relatedness/overrides");
+            if (r.ok) overridesMap = (await r.json()).overrides || {};
+          } catch (err) {
+            /* leave the cached map as-is on failure */
+          }
+        }
+
+        // Reflect applied overrides in the drawn graph: linkValue() reads
+        // d.override, so seeding it makes edited connections keep their thickness/
+        // % across navigation. Runs synchronously before first paint -> no flash.
+        function applyOverridesToLinks() {
+          links.forEach((l) => {
+            const key = pairKey(linkEndId(l.source), linkEndId(l.target));
+            if (Object.prototype.hasOwnProperty.call(overridesMap, key)) {
+              l.override = overridesMap[key];
+            }
+          });
           applyLinkVisual(linkSel);
-          hidePopover(); // close any open editor so it can't linger showing a stale value
+        }
+        applyOverridesToLinks();
+
+        // "Reset view" -- only re-centers the layout; leaves edits untouched.
+        function resetView() {
           svg.transition().duration(400).call(zoomBehavior.transform, d3.zoomIdentity);
           deploy();
         }
 
+        // "Reset edits" -- reverts session slider edits and clears the committed
+        // server-side overrides; does NOT move the view.
+        async function resetEdits() {
+          links.forEach((l) => { delete l.override; });
+          applyLinkVisual(linkSel);
+          hidePopover(); // close any open editor so it can't linger showing a stale value
+          try {
+            await fetch("/documents/relatedness/overrides", { method: "DELETE" });
+          } catch (err) {
+            /* best-effort; the visual reset already happened */
+          }
+          await refreshOverrides();
+        }
+
         document.getElementById("graph-reset-btn").addEventListener("click", resetView);
+        document.getElementById("graph-reset-edits-btn").addEventListener("click", resetEdits);
 
         function highlightForLink(link) {
           linkSel.classed("dimmed", (d) => d !== link);
@@ -613,35 +685,97 @@
 
         function showConnectionPopover(event, d) {
           const pct = Math.round(linkValue(d) * 100);
+          const applied = Object.prototype.hasOwnProperty.call(
+            overridesMap, pairKey(d.source.id, d.target.id)
+          );
           renderPopoverShell(`
             <p class="connection-popover-title">${escapeHtml(d.source.name)} &harr; ${escapeHtml(d.target.name)}</p>
             <div class="connection-popover-edit">
               <input type="range" class="connection-popover-slider" min="0" max="100" step="1" value="${pct}" aria-label="Relatedness percent" />
-              <input type="number" class="connection-popover-number" min="0" max="100" step="1" value="${pct}" aria-label="Relatedness percent" />
+              <input type="text" class="connection-popover-number" inputmode="numeric" maxlength="3" autocomplete="off" value="${pct}" aria-label="Relatedness percent" />
               <span class="connection-popover-score">% related</span>
             </div>
+            <button type="button" class="connection-popover-apply${applied ? " applied" : ""}">${applied ? "Applied ✓" : "Apply to search"}</button>
             ${renderTopics(d.sharedTopics)}
             ${renderRelations(d.sharedRelations)}
           `);
 
           const sliderEl = popoverEl.querySelector(".connection-popover-slider");
           const numberEl = popoverEl.querySelector(".connection-popover-number");
+          const applyBtn = popoverEl.querySelector(".connection-popover-apply");
 
-          // Editing only mutates the override + redraws this one link. It deliberately
-          // does NOT re-run toGraph / re-filter `links` / remove DOM, so a connection
-          // dragged below the 0.35 threshold stays on screen (see MIN_STROKE/MIN_OPACITY).
-          function applyEdit(rawValue) {
-            let next = Math.round(Number(rawValue));
-            if (!Number.isFinite(next)) next = 0;
-            next = Math.max(0, Math.min(100, next));
-            sliderEl.value = String(next);
-            numberEl.value = String(next);
-            d.override = next / 100;
-            applyLinkVisual(linkSel.filter((l) => l === d));
+          // Keep only a leading run of digits, clamped to 0-100. Rejects letters,
+          // signs, decimals, exponents, whitespace and pasted junk without ever
+          // producing NaN. Returns null when there's no usable number.
+          function sanitizePct(raw) {
+            const match = String(raw).match(/\d+/);
+            if (!match) return null;
+            return Math.min(100, parseInt(match[0], 10));
           }
 
-          sliderEl.addEventListener("input", (e) => applyEdit(e.target.value));
-          numberEl.addEventListener("input", (e) => applyEdit(e.target.value));
+          // Commit a clamped percent (0-100) to this one link and redraw it. It
+          // deliberately does NOT re-run toGraph / re-filter `links` / remove DOM, so a
+          // connection dragged below the 0.35 threshold stays on screen (see
+          // MIN_STROKE/MIN_OPACITY).
+          function commitPct(pctValue) {
+            const next = Math.max(0, Math.min(100, pctValue));
+            d.override = next / 100;
+            applyLinkVisual(linkSel.filter((l) => l === d));
+            // Editing the value un-commits the shown "Applied" state until re-applied.
+            applyBtn.classList.remove("applied");
+            applyBtn.textContent = "Apply to search";
+            return next;
+          }
+
+          // Slider is always numeric: apply directly and mirror into the number box.
+          sliderEl.addEventListener("input", (e) => {
+            const next = commitPct(Math.round(Number(e.target.value)) || 0);
+            numberEl.value = String(next);
+          });
+
+          // Number box: strip improper characters live so they never persist. An
+          // empty/all-invalid value is left alone (no override change) so the user can
+          // clear and retype; blur restores a valid value.
+          numberEl.addEventListener("input", (e) => {
+            const pctValue = sanitizePct(e.target.value);
+            if (pctValue === null) {
+              e.target.value = "";
+              return;
+            }
+            const next = commitPct(pctValue);
+            e.target.value = String(next);
+            sliderEl.value = String(next);
+          });
+          numberEl.addEventListener("blur", () => {
+            if (sanitizePct(numberEl.value) === null) {
+              numberEl.value = String(Math.round(linkValue(d) * 100));
+            }
+          });
+
+          // Commit this connection's current value to the server so it biases queries.
+          applyBtn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            if (applyBtn.classList.contains("applied")) return;
+            const score = linkValue(d);
+            applyBtn.textContent = "Applying…";
+            try {
+              const r = await fetch("/documents/relatedness/override", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  doc_id: d.source.id,
+                  related_doc_id: d.target.id,
+                  score,
+                }),
+              });
+              if (!r.ok) throw new Error("request failed");
+              overridesMap = (await r.json()).overrides || overridesMap;
+              applyBtn.classList.add("applied");
+              applyBtn.textContent = "Applied ✓";
+            } catch (err) {
+              applyBtn.textContent = "Failed — retry";
+            }
+          });
 
           positionPopover(event);
         }
@@ -724,8 +858,18 @@
         return;
       }
 
+      // Load any persisted (applied) relatedness overrides so the graph renders
+      // with the user's edits instead of the raw computed scores. Non-fatal.
+      let initialOverrides = {};
+      try {
+        const r = await fetch("/documents/relatedness/overrides");
+        if (r.ok) initialOverrides = (await r.json()).overrides || {};
+      } catch (err) {
+        /* no saved overrides / offline -- fall back to computed scores */
+      }
+
       const { nodes, links } = toGraph(pairs);
-      renderGraph(nodes, links);
+      renderGraph(nodes, links, initialOverrides);
     })();
   </script>
 </body>

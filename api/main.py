@@ -38,6 +38,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def revalidate_html(request, call_next):
+    """Force browsers to revalidate the served HTML pages on every load.
+
+    StaticFiles doesn't set Cache-Control, so browsers apply heuristic caching
+    and can keep running a stale chat.html (old JS) after the file changes.
+    "no-cache" means "always revalidate before use" -- combined with the ETag
+    StaticFiles already sends, an unchanged file still returns a cheap 304, but
+    an edited one is always picked up on a normal refresh.
+    """
+    response = await call_next(request)
+    if response.headers.get("content-type", "").startswith("text/html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
 app.include_router(documents_router)
 app.include_router(query_router)
 app.include_router(sessions_router)

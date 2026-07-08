@@ -5,8 +5,8 @@ class Settings(BaseSettings):
     # LLM
     llm_binding_api_key: str
     llm_binding_host: str
-    llm_model: str = "qwen3.6-plus"
-    vision_model: str = "qwen3.6-plus"
+    llm_model: str = "qwen3.7-max-2026-06-08"
+    vision_model: str = "qwen-vl-plus"
     fast_llm_model: str = "qwen3.6-flash"
 
     # Embedding

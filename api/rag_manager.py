@@ -1,7 +1,9 @@
 import asyncio
 import json
 import logging
+import re
 import sys
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -18,8 +20,14 @@ from raganything.callbacks import ProcessingCallback
 from raganything.utils import strip_thinking_tags
 
 from .config import settings
-from .doc_names_store import load_doc_names, save_doc_name
+from .doc_names_store import (
+    load_doc_names,
+    save_doc_name,
+    strip_upload_prefix,
+    strip_upload_prefixes,
+)
 from .models import TaskStatus
+from .relatedness_boost import get_boost, rerank
 from .task_store import (
     complete_task,
     fail_task,
@@ -139,9 +147,94 @@ _fast_llm_func = None
 # uploads start in upload order regardless of the limit.
 _parse_semaphore = asyncio.Semaphore(settings.max_concurrent_documents)
 
+# Per-request switch for the synthesis model's "thinking" (chain-of-thought)
+# tokens, read inside the synthesis branch of _build_llm_func. A ContextVar is
+# async-task-local, so concurrent queries each keep their own value. Default
+# True preserves the model's native behavior for any caller that doesn't set it
+# (the query routes always do). The fast/mechanical model is unaffected -- it
+# forces thinking off unconditionally (see _build_fast_llm_func).
+synthesis_thinking: ContextVar[bool] = ContextVar("synthesis_thinking", default=True)
+
+# Cheap intent cues that a query needs multi-step reasoning (analytical/
+# multi-hop) rather than a direct extractive lookup. Used by "auto" mode.
+_ANALYTICAL_CUES = re.compile(
+    r"\b(why|how|compare|comparison|versus|vs|differ|difference|tradeoff|"
+    r"trade-off|explain|analyz|evaluat|summariz|relationship|relate|cause|"
+    r"impact|implication|recommend|best|worst|rank|across|both|overall|"
+    r"synthesiz)\b",
+    re.IGNORECASE,
+)
+
+
+def _auto_thinking(query: str) -> bool:
+    """Heuristic router for "auto" mode: enable thinking only when the query
+    looks analytical/multi-hop, else keep it off for speed.
+
+    Intent-only signal (question verbs + length). Retrieval-spread/confidence
+    signals would be stronger but live deep inside aquery and aren't cheaply
+    reachable from the route; escalating on those is a future improvement.
+    """
+    if _ANALYTICAL_CUES.search(query or ""):
+        return True
+    return len((query or "").split()) > 25
+
+
+def resolve_thinking(setting: Optional[str], query: str) -> bool:
+    """Map the request's thinking setting ("on"|"off"|"auto") to a bool.
+
+    Unknown/missing values fall back to "off" (the UI default, speed-first).
+    """
+    value = (setting or "off").lower()
+    if value == "on":
+        return True
+    if value == "auto":
+        return _auto_thinking(query)
+    return False
+
+
+def _scrub_messages(messages: list) -> list:
+    """Strip the upload "<uuid>_" prefix from the text of OpenAI-style messages.
+
+    Handles both plain-string content and multimodal content lists (only the
+    {"type": "text", ...} parts -- image parts are left untouched). Returns new
+    dicts so the caller's message structures aren't mutated in place.
+    """
+    scrubbed = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            msg = {**msg, "content": strip_upload_prefixes(content)}
+        elif isinstance(content, list):
+            msg = {
+                **msg,
+                "content": [
+                    {**p, "text": strip_upload_prefixes(p["text"])}
+                    if isinstance(p, dict)
+                    and p.get("type") == "text"
+                    and isinstance(p.get("text"), str)
+                    else p
+                    for p in content
+                ],
+            }
+        scrubbed.append(msg)
+    return scrubbed
+
 
 def _complete(model: str, prompt, system_prompt=None, history_messages=None, **kwargs):
-    """Call openai_complete_if_cache with this deployment's api_key/base_url baked in."""
+    """Call openai_complete_if_cache with this deployment's api_key/base_url baked in.
+
+    Scrubs the upload "<uuid>_" prefix out of everything the model sees (prompt,
+    system prompt, and any multimodal `messages`). This is the single chokepoint
+    every generation path funnels through -- text (llm_model_func), fast, and
+    vision (both the messages and image_data branches) -- so citations come back
+    with clean document names no matter which path produced the answer.
+    """
+    if isinstance(prompt, str):
+        prompt = strip_upload_prefixes(prompt)
+    if isinstance(system_prompt, str):
+        system_prompt = strip_upload_prefixes(system_prompt)
+    if isinstance(kwargs.get("messages"), list):
+        kwargs["messages"] = _scrub_messages(kwargs["messages"])
     return openai_complete_if_cache(
         model,
         prompt,
@@ -157,11 +250,23 @@ def _build_fast_llm_func():
     def fast_llm_model_func(
         prompt, system_prompt=None, history_messages=None, **kwargs
     ):
+        # Disable qwen's "thinking" reasoning tokens on the fast model. This
+        # model only handles mechanical steps -- keyword extraction (routed here
+        # from _build_llm_func), modal table/equation/generic captioning, and
+        # chat-history condensing -- none of which benefit from chain-of-thought.
+        # Left on, qwen3.6-flash emits hundreds of hidden reasoning tokens per
+        # call (measured ~750 on a keyword-extraction prompt) purely as latency.
+        # The full model's synthesis call is untouched, so answer-quality
+        # reasoning is preserved. DashScope reads this from the request body, so
+        # it goes via extra_body; merge into any caller-supplied extra_body
+        # rather than clobber it.
+        extra_body = {**kwargs.pop("extra_body", {}), "enable_thinking": False}
         return _complete(
             settings.fast_llm_model,
             prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
+            extra_body=extra_body,
             **kwargs,
         )
 
@@ -170,6 +275,8 @@ def _build_fast_llm_func():
 
 def _build_llm_func(fast_llm_func):
     def llm_model_func(prompt, system_prompt=None, history_messages=None, **kwargs):
+        # Note: the upload "<uuid>_" prefix is scrubbed centrally in _complete
+        # (covers this path plus the vision/fast paths), so no stripping here.
         # LightRAG marks its keyword-extraction call with keyword_extraction=True
         # (see lightrag/operate.py's extract_keywords_only) -- route that cheap,
         # mechanical task to the fast model and keep the full model for everything
@@ -181,11 +288,20 @@ def _build_llm_func(fast_llm_func):
                 history_messages=history_messages,
                 **kwargs,
             )
+        # Synthesis (final answer) call. Honor the per-request thinking switch
+        # (set by the query routes; defaults True). qwen models read this from
+        # the request body via extra_body; merge rather than clobber any
+        # caller-supplied extra_body.
+        extra_body = {
+            **kwargs.pop("extra_body", {}),
+            "enable_thinking": synthesis_thinking.get(),
+        }
         return _complete(
             settings.llm_model,
             prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
+            extra_body=extra_body,
             **kwargs,
         )
 
@@ -259,6 +375,19 @@ def initialize_rag() -> RAGAnything:
     global _rag, _fast_llm_func
     _fast_llm_func = _build_fast_llm_func()
     llm_func = _build_llm_func(_fast_llm_func)
+    # LightRAG already runs a rerank step for every graph/vector query when
+    # enable_rerank is true (the default), but does nothing without a rerank
+    # func. We supply one that reorders retrieved chunks by user-committed
+    # document relatedness (see relatedness_boost). min_rerank_score=0.0 keeps
+    # LightRAG's score-threshold filter off so our synthetic scores never drop
+    # chunks -- with no committed overrides the rerank is a pure no-op.
+    #
+    # rerank_model_func must be the module-level `rerank` function, NOT a bound
+    # method: LightRAG's __post_init__ runs asdict(self), which deep-copies
+    # every config field, and a bound method would drag in the boost singleton's
+    # threading.Lock (unpicklable). get_boost() here just warms the override
+    # store at startup.
+    get_boost()
     _rag = RAGAnything(
         config=RAGAnythingConfig(
             working_dir=settings.working_dir,
@@ -271,7 +400,11 @@ def initialize_rag() -> RAGAnything:
         llm_model_func=llm_func,
         vision_model_func=_build_vision_func(llm_func),
         embedding_func=_build_embedding_func(),
-        lightrag_kwargs={"vector_storage": "MilvusVectorDBStorage"},
+        lightrag_kwargs={
+            "vector_storage": "MilvusVectorDBStorage",
+            "rerank_model_func": rerank,
+            "min_rerank_score": 0.0,
+        },
     )
     _rag.callback_manager.register(ProgressTrackingCallback())
     return _rag
@@ -352,7 +485,9 @@ def load_existing_documents() -> None:
             if raw_status == "handling"
             else entry.get("error_msg") or None
         )
-        file_name = doc_names.get(doc_id) or Path(entry.get("file_path", doc_id)).name
+        file_name = strip_upload_prefix(
+            doc_names.get(doc_id) or Path(entry.get("file_path", doc_id)).name
+        )
         import_existing(
             task_id=doc_id,
             file_name=file_name,

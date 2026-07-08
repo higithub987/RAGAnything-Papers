@@ -15,6 +15,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/shared.css">
+<link rel="icon" href="data:,">
 <style>
   html, body {
     height: 100%;
@@ -129,10 +130,12 @@
     flex-direction: column;
   }
   .card h1 {
+    flex: 0 0 auto;
     font-size: 16px;
     margin: 0 0 2px;
   }
   .card p.subtitle {
+    flex: 0 0 auto;
     font-size: 12px;
     margin: 0 0 10px;
   }
@@ -289,6 +292,7 @@
     background: none;
   }
   .mode-toggle {
+    flex: 0 0 auto;
     display: flex;
     gap: 0;
     margin-bottom: 6px;
@@ -318,6 +322,37 @@
   .mode-toggle button + button {
     border-left: 1px solid var(--border);
   }
+  .think-field {
+    flex: 0 0 auto;
+  }
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .seg button {
+    flex: 0 0 auto;
+    padding: 7px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-strong);
+    background: var(--surface);
+    border: none;
+    border-radius: 0;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .seg button:hover:not(.active) {
+    background: var(--bg);
+  }
+  .seg button.active {
+    background: var(--blue);
+    color: #fff;
+  }
+  .seg button + button {
+    border-left: 1px solid var(--border);
+  }
 </style>
 </head>
 <body>
@@ -326,8 +361,8 @@
     <div class="nav-brand">
       <a href="/" class="brand-icon" title="Home">RAG ▾</a>
       <div class="brand-dropdown">
-        <a href="/documents.html">Documents</a>
         <a href="/chat.html" class="active">Chat</a>
+        <a href="/documents.html">Documents</a>
         <a href="/visualize.html">Visualize</a>
       </div>
     </div>
@@ -355,6 +390,14 @@
       <form id="query-form">
         <textarea id="query" name="query" placeholder="What would you like to know?" required></textarea>
         <div class="row">
+          <div class="think-field">
+            <label>Thinking</label>
+            <div class="seg" id="think-toggle">
+              <button type="button" data-think="off">Off</button>
+              <button type="button" data-think="auto">Auto</button>
+              <button type="button" data-think="on">On</button>
+            </div>
+          </div>
           <div class="mode-field">
             <label for="mode">Mode</label>
             <select id="mode" name="mode">
@@ -387,6 +430,25 @@
     const newChatBtn = document.getElementById("new-chat-btn");
     const queryInput = document.getElementById("query");
 
+    // Thinking control (Off | Auto | On) for the synthesis model, sent with each
+    // query. Persisted like the theme/mode toggles; defaults to Off (fast).
+    const THINKING_KEY = "ragThinking";
+    const thinkToggle = document.getElementById("think-toggle");
+    let thinkingMode = localStorage.getItem(THINKING_KEY) || "off";
+    function applyThinkingMode() {
+      for (const btn of thinkToggle.querySelectorAll("button")) {
+        btn.classList.toggle("active", btn.dataset.think === thinkingMode);
+      }
+    }
+    thinkToggle.addEventListener("click", (event) => {
+      const btn = event.target.closest("button[data-think]");
+      if (!btn) return;
+      thinkingMode = btn.dataset.think;
+      localStorage.setItem(THINKING_KEY, thinkingMode);
+      applyThinkingMode();
+    });
+    applyThinkingMode();
+
     queryInput.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" || event.shiftKey) return;
       event.preventDefault();
@@ -413,8 +475,26 @@
     }
 
     let currentMode = sessionStorage.getItem(ACTIVE_MODE_KEY) || "chat";
-    let turns = currentMode === "query" ? loadMessages(currentMode) : [];
+    // Cached per mode so a full page reload (e.g. switching to another tab and
+    // back) can repaint the conversation instantly. In chat mode the server is
+    // still the source of truth -- initChatMode() reconciles against it -- but
+    // the cache covers the gap before that round-trip and any turn the server
+    // hasn't recorded yet.
+    let turns = loadMessages(currentMode);
     let currentSessionId = sessionStorage.getItem(CURRENT_SESSION_KEY) || null;
+
+    // The in-flight /query/stream request, if any. Aborting it stops the client
+    // render loop AND signals the server (client disconnect) to stop generating
+    // an answer the user has moved on from -- so New Chat, switching/deleting a
+    // session, resubmitting, Clear, or navigating away don't leave work running.
+    let activeStreamController = null;
+    function cancelActiveStream() {
+      if (activeStreamController) {
+        activeStreamController.abort();
+        activeStreamController = null;
+      }
+    }
+    window.addEventListener("pagehide", cancelActiveStream);
 
     // Chat-mode conversations live server-side (api/session_store.py): the
     // server owns the rolling-history window/summary and naming, and clears
@@ -488,12 +568,25 @@
 
       if (event.target.closest(".delete-btn")) {
         if (!window.confirm("Delete this chat?")) return;
+        cancelActiveStream();
         const response = await fetch(`/sessions/${sessionId}`, { method: "DELETE" });
         if (!response.ok) return;
         if (sessionId === currentSessionId) {
-          currentSessionId = null;
-          sessionStorage.removeItem(CURRENT_SESSION_KEY);
-          await initChatMode();
+          // Switch to another existing chat rather than spawning a replacement.
+          // Auto-creating here bumped the never-reused seq counter, leaving
+          // later chats confusingly numbered. Only create when none remain.
+          const sessions = await fetchSessions();
+          if (sessions.length) {
+            currentSessionId = sessions[0].session_id; // most recent remaining
+            sessionStorage.setItem(CURRENT_SESSION_KEY, currentSessionId);
+            renderChatList(sessions);
+            turns = await fetchSessionTurns(currentSessionId);
+            renderMessages();
+          } else {
+            currentSessionId = null;
+            sessionStorage.removeItem(CURRENT_SESSION_KEY);
+            await initChatMode();
+          }
         } else {
           renderChatList(await fetchSessions());
         }
@@ -501,6 +594,7 @@
       }
 
       if (sessionId === currentSessionId) return;
+      cancelActiveStream();
       currentSessionId = sessionId;
       sessionStorage.setItem(CURRENT_SESSION_KEY, currentSessionId);
       turns = await fetchSessionTurns(currentSessionId);
@@ -511,6 +605,7 @@
     });
 
     newChatBtn.addEventListener("click", async () => {
+      cancelActiveStream();
       currentSessionId = await createSession();
       sessionStorage.setItem(CURRENT_SESSION_KEY, currentSessionId);
       turns = [];
@@ -628,6 +723,10 @@
     }
 
     function renderMessages() {
+      // Persist on every full render so the conversation survives a page reload.
+      // Streaming does NOT go through here (see the submit handler), so this
+      // fires only on discrete state changes, not on every chunk.
+      saveMessages(currentMode, turns);
       messagesEl.innerHTML = "";
       if (!turns.length) {
         const emptyState = document.createElement("p");
@@ -662,10 +761,11 @@
     for (const btn of modeButtons) {
       btn.classList.toggle("active", btn.dataset.mode === currentMode);
     }
+    // Paint any cached turns immediately; in chat mode initChatMode() then
+    // reconciles against the server (the source of truth).
+    renderMessages();
     if (currentMode === "chat") {
       initChatMode();
-    } else {
-      renderMessages();
     }
 
     form.addEventListener("submit", async (event) => {
@@ -674,6 +774,12 @@
       const query = document.getElementById("query").value.trim();
       const mode = document.getElementById("mode").value;
       if (!query) return;
+      queryInput.value = "";
+
+      // A new submit supersedes any stream still running from a previous one.
+      cancelActiveStream();
+      const controller = new AbortController();
+      activeStreamController = controller;
 
       submitBtn.disabled = true;
       const turn = { query, kind: "loading", text: "Thinking…" };
@@ -683,17 +789,37 @@
         turns.unshift(turn);
       }
       renderMessages();
-      if (currentMode === "query") saveMessages(currentMode, turns);
+
+      // The newest turn renders last, so its assistant bubble is the final one
+      // in the list. During streaming we update ONLY this element rather than
+      // rebuilding the whole message list (which re-parses every turn's markdown)
+      // on every chunk -- that per-chunk full rebuild was the source of the lag.
+      const streamingBubble = messagesEl.querySelector(
+        ".bubble.assistant:last-child"
+      );
+      let rafId = null;
+      const paintStreamingBubble = () => {
+        rafId = null;
+        if (!streamingBubble) return;
+        streamingBubble.className = "bubble assistant answer";
+        streamingBubble.innerHTML = renderMarkdown(turn.text);
+        scrollMessagesToBottom();
+      };
+      // Coalesce bursts of chunks into at most one re-parse per animation frame.
+      const scheduleStreamingRender = () => {
+        if (rafId === null) rafId = requestAnimationFrame(paintStreamingBubble);
+      };
 
       try {
         const requestBody =
           currentMode === "chat"
-            ? { query, mode, session_id: currentSessionId }
-            : { query, mode, conversation_history: [] };
+            ? { query, mode, thinking: thinkingMode, session_id: currentSessionId }
+            : { query, mode, thinking: thinkingMode, conversation_history: [] };
         const response = await fetch("/query/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(requestBody),
+          signal: controller.signal,
         });
 
         if (!response.ok) {
@@ -721,25 +847,30 @@
             accumulated += decoder.decode(value, { stream: true });
             turn.kind = "answer";
             turn.text = accumulated;
-            renderMessages();
+            scheduleStreamingRender();
           }
         }
         accumulated += decoder.decode();
         turn.kind = "answer";
         turn.text = accumulated;
+        if (rafId !== null) cancelAnimationFrame(rafId);
         renderMessages();
-        if (currentMode === "query") saveMessages(currentMode, turns);
       } catch (err) {
+        if (rafId !== null) cancelAnimationFrame(rafId);
+        // An abort is a user action (New Chat, switch, resubmit, navigate away),
+        // not an error -- leave the DOM/turns to whatever superseded this stream.
+        if (err.name === "AbortError") return;
         turn.kind = "error";
         turn.text = err.message || "Something went wrong.";
         renderMessages();
-        if (currentMode === "query") saveMessages(currentMode, turns);
       } finally {
+        if (activeStreamController === controller) activeStreamController = null;
         submitBtn.disabled = false;
       }
     });
 
     clearBtn.addEventListener("click", () => {
+      cancelActiveStream();
       turns = [];
       sessionStorage.removeItem(storageKeyForMode(currentMode));
       renderMessages();

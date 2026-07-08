@@ -7,9 +7,16 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile
 
 from ..config import settings
-from ..models import DocumentRelatedness, DocumentTask, DocumentTopics
+from ..models import (
+    DocumentRelatedness,
+    DocumentTask,
+    DocumentTopics,
+    RelatednessOverrideRequest,
+    RelatednessOverridesResponse,
+)
 from ..rag_manager import get_rag, load_existing_documents, process_document_task
 from ..relatedness import compute_relatedness, get_document_topics
+from ..relatedness_boost import get_boost
 from ..task_store import create_task, delete_task, get_task, list_tasks
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -65,6 +72,32 @@ def list_documents():
 @router.get("/relatedness", response_model=list[DocumentRelatedness])
 async def get_relatedness():
     return await compute_relatedness()
+
+
+def _overrides_response() -> RelatednessOverridesResponse:
+    boost = get_boost()
+    return RelatednessOverridesResponse(
+        overrides=boost.overrides(), doc_boost=boost.doc_boost()
+    )
+
+
+@router.get("/relatedness/overrides", response_model=RelatednessOverridesResponse)
+def get_relatedness_overrides():
+    return _overrides_response()
+
+
+@router.put("/relatedness/override", response_model=RelatednessOverridesResponse)
+def set_relatedness_override(req: RelatednessOverrideRequest):
+    """Commit one connection's relatedness so it biases future queries."""
+    get_boost().set_override(req.doc_id, req.related_doc_id, req.score)
+    return _overrides_response()
+
+
+@router.delete("/relatedness/overrides", response_model=RelatednessOverridesResponse)
+def clear_relatedness_overrides():
+    """Drop all committed relatedness overrides (the 'Reset edits' action)."""
+    get_boost().clear()
+    return _overrides_response()
 
 
 @router.get("/{doc_id}/topics", response_model=DocumentTopics)

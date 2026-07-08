@@ -53,11 +53,27 @@ class DocumentTopics(BaseModel):
     topics: list[TopicDetail] = []
 
 
+class RelatednessOverrideRequest(BaseModel):
+    doc_id: str
+    related_doc_id: str
+    score: float
+
+
+class RelatednessOverridesResponse(BaseModel):
+    # {"docA::docB": score, ...} -- committed connection strengths
+    overrides: dict[str, float] = {}
+    # {doc_id: multiplier, ...} -- derived per-document query boost (>= 1.0)
+    doc_boost: dict[str, float] = {}
+
+
 class QueryRequest(BaseModel):
     query: str
     mode: str = "hybrid"
     conversation_history: list[dict[str, str]] = []
     session_id: Optional[str] = None
+    # Synthesis-model thinking control: "off" (fast, default), "on", or "auto"
+    # (route by query complexity). See rag_manager.resolve_thinking.
+    thinking: str = "off"
 
 
 class ChatSession(BaseModel):
@@ -110,6 +126,8 @@ class MultimodalQueryRequest(BaseModel):
     query: str
     multimodal_content: list[MultimodalItem]
     mode: str = "hybrid"
+    # See QueryRequest.thinking.
+    thinking: str = "off"
 
 
 class QueryResponse(BaseModel):
