@@ -14,10 +14,16 @@ from ..models import (
     QueryResponse,
 )
 from ..rag_manager import (
+    ESCALATION_PARAMS,
+    auto_first_thinking,
     condense_history,
     get_rag,
+    looks_insufficient,
     resolve_thinking,
+    resolve_thinking_budget,
+    status_frame,
     synthesis_thinking,
+    synthesis_thinking_budget,
 )
 from raganything.utils import strip_thinking_tags
 
@@ -169,14 +175,41 @@ async def text_query(request: QueryRequest):
             )
         elif request.conversation_history:
             kwargs["conversation_history"] = request.conversation_history
-        synthesis_thinking.set(resolve_thinking(request.thinking, request.query))
-        answer = await get_rag().aquery(request.query, mode=request.mode, **kwargs)
-        clean_answer = strip_thinking_tags(answer)
+
+        synthesis_thinking_budget.set(resolve_thinking_budget(request.thinking_budget))
+        escalated = False
+        if request.thinking == "auto":
+            first_thinking = auto_first_thinking(request.query)
+            synthesis_thinking.set(first_thinking)
+            clean_answer = strip_thinking_tags(
+                await get_rag().aquery(request.query, mode=request.mode, **kwargs)
+            )
+            # Escalate only a thinking-off pass that admitted it lacked context.
+            if not first_thinking and looks_insufficient(clean_answer):
+                synthesis_thinking.set(True)
+                clean_answer = strip_thinking_tags(
+                    await get_rag().aquery(
+                        request.query,
+                        mode=request.mode,
+                        **ESCALATION_PARAMS,
+                        **kwargs,
+                    )
+                )
+                escalated = True
+        else:
+            synthesis_thinking.set(resolve_thinking(request.thinking, request.query))
+            clean_answer = strip_thinking_tags(
+                await get_rag().aquery(request.query, mode=request.mode, **kwargs)
+            )
+
         if session is not None:
             session_store.add_turn(session, request.query, clean_answer)
             _schedule_condense(session)
         return QueryResponse(
-            answer=clean_answer, query=request.query, mode=request.mode
+            answer=clean_answer,
+            query=request.query,
+            mode=request.mode,
+            escalated=escalated,
         )
     except HTTPException:
         raise
@@ -198,6 +231,7 @@ async def multimodal_query(request: MultimodalQueryRequest):
     try:
         content = _to_multimodal_content(request)
         synthesis_thinking.set(resolve_thinking(request.thinking, request.query))
+        synthesis_thinking_budget.set(resolve_thinking_budget(request.thinking_budget))
         answer = await get_rag().aquery_with_multimodal(
             request.query,
             multimodal_content=content,
@@ -233,6 +267,69 @@ async def _stream_and_record(chunks, session, query: str):
             _schedule_condense(session)
 
 
+_ESCALATION_NOTICE = (
+    "The quick answer didn't find enough context — reasoning more deeply and "
+    "searching wider. This will take a little longer…"
+)
+
+
+async def _emit(result, parts):
+    """Yield an aquery result (a full string or an async chunk iterator) as
+    thinking-stripped text, accumulating it into `parts` for later recording."""
+    if isinstance(result, str):
+        cleaned = strip_thinking_tags(result)
+        parts.append(cleaned)
+        yield cleaned
+    else:
+        async for chunk in _strip_thinking_stream(result):
+            parts.append(chunk)
+            yield chunk
+
+
+async def _auto_escalating_stream(run, query, record=None, budget=None):
+    """Auto-mode stream with an insufficient-context safety net.
+
+    - Clearly analytical queries stream a thinking-on answer directly.
+    - Otherwise a fast thinking-off pass is BUFFERED so it can be inspected; if
+      it admits it lacked context (looks_insufficient), a one-off delay notice is
+      emitted and an escalated pass (thinking-on + wider retrieval) is streamed.
+
+    ``run(stream: bool, **overrides)`` executes one query pass; this generator
+    sets the thinking contextvar before each. ``record(text)`` optionally
+    persists the final answer (runs in a finally so a client disconnect mid-
+    stream still records what was generated). The status frame is never recorded.
+    ``budget`` caps reasoning tokens on any thinking-on pass; set once here since
+    this generator runs in the StreamingResponse context after the route returns.
+    """
+    parts = []
+    synthesis_thinking_budget.set(budget)
+    try:
+        try:
+            if auto_first_thinking(query):
+                synthesis_thinking.set(True)
+                async for chunk in _emit(await run(stream=True), parts):
+                    yield chunk
+                return
+            synthesis_thinking.set(False)
+            first = await run(stream=False)
+            first_clean = strip_thinking_tags(first if isinstance(first, str) else "")
+            if not looks_insufficient(first_clean):
+                parts.append(first_clean)
+                yield first_clean
+                return
+            yield status_frame(_ESCALATION_NOTICE)
+            synthesis_thinking.set(True)
+            escalated = await run(stream=True, **ESCALATION_PARAMS)
+            async for chunk in _emit(escalated, parts):
+                yield chunk
+        except Exception as exc:
+            logger.exception("Auto-escalation query failed")
+            yield f"\n[error: {exc}]"
+    finally:
+        if record and parts:
+            record("".join(parts))
+
+
 @router.post("/stream")
 async def text_query_stream(request: QueryRequest):
     session = None
@@ -248,6 +345,36 @@ async def text_query_stream(request: QueryRequest):
         elif request.conversation_history:
             kwargs["conversation_history"] = request.conversation_history
 
+        budget = resolve_thinking_budget(request.thinking_budget)
+
+        # Auto mode runs a buffered fast pass and may escalate; its own generator
+        # sets the thinking contextvar and records the turn, so it bypasses the
+        # single-pass _stream_result/_stream_and_record path below.
+        if request.thinking == "auto":
+
+            async def run(stream, **overrides):
+                return await get_rag().aquery(
+                    request.query,
+                    mode=request.mode,
+                    stream=stream,
+                    **overrides,
+                    **kwargs,
+                )
+
+            def record(text):
+                session_store.add_turn(session, request.query, text)
+                _schedule_condense(session)
+
+            return StreamingResponse(
+                _auto_escalating_stream(
+                    run,
+                    request.query,
+                    record=record if session is not None else None,
+                    budget=budget,
+                ),
+                media_type="text/plain",
+            )
+
         thinking = resolve_thinking(request.thinking, request.query)
 
         async def make_result():
@@ -255,6 +382,7 @@ async def text_query_stream(request: QueryRequest):
             # call and the retry path -- the latter runs from _stream_result in
             # the StreamingResponse context, after this route has returned.
             synthesis_thinking.set(thinking)
+            synthesis_thinking_budget.set(budget)
             return await get_rag().aquery(
                 request.query, mode=request.mode, stream=True, **kwargs
             )
@@ -274,10 +402,29 @@ async def text_query_stream(request: QueryRequest):
 async def multimodal_query_stream(request: MultimodalQueryRequest):
     try:
         content = _to_multimodal_content(request)
+        budget = resolve_thinking_budget(request.thinking_budget)
+
+        if request.thinking == "auto":
+
+            async def run(stream, **overrides):
+                return await get_rag().aquery_with_multimodal(
+                    request.query,
+                    multimodal_content=content,
+                    mode=request.mode,
+                    stream=stream,
+                    **overrides,
+                )
+
+            return StreamingResponse(
+                _auto_escalating_stream(run, request.query, budget=budget),
+                media_type="text/plain",
+            )
+
         thinking = resolve_thinking(request.thinking, request.query)
 
         async def make_result():
             synthesis_thinking.set(thinking)
+            synthesis_thinking_budget.set(budget)
             return await get_rag().aquery_with_multimodal(
                 request.query,
                 multimodal_content=content,

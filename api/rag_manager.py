@@ -155,6 +155,28 @@ _parse_semaphore = asyncio.Semaphore(settings.max_concurrent_documents)
 # forces thinking off unconditionally (see _build_fast_llm_func).
 synthesis_thinking: ContextVar[bool] = ContextVar("synthesis_thinking", default=True)
 
+# Per-request cap on the synthesis model's reasoning tokens (qwen "thinking_budget").
+# None = uncapped. Only applied when thinking is on (see the synthesis branch);
+# set by the query routes in the same context as synthesis_thinking.
+synthesis_thinking_budget: ContextVar[Optional[int]] = ContextVar(
+    "synthesis_thinking_budget", default=None
+)
+
+
+def resolve_thinking_budget(value) -> Optional[int]:
+    """Normalize a request's thinking_budget to a positive int or None (uncapped).
+
+    Non-numeric / missing / <= 0 -> None; anything larger is clamped to a sane
+    ceiling so a stray huge value can't blow up generation.
+    """
+    try:
+        budget = int(value)
+    except (TypeError, ValueError):
+        return None
+    if budget <= 0:
+        return None
+    return min(budget, 32768)
+
 # Cheap intent cues that a query needs multi-step reasoning (analytical/
 # multi-hop) rather than a direct extractive lookup. Used by "auto" mode.
 _ANALYTICAL_CUES = re.compile(
@@ -183,6 +205,8 @@ def resolve_thinking(setting: Optional[str], query: str) -> bool:
     """Map the request's thinking setting ("on"|"off"|"auto") to a bool.
 
     Unknown/missing values fall back to "off" (the UI default, speed-first).
+    Note: "auto" is handled by the escalation flow in routes/query.py; this
+    heuristic result (via auto_first_thinking) is only its *first-pass* choice.
     """
     value = (setting or "off").lower()
     if value == "on":
@@ -190,6 +214,55 @@ def resolve_thinking(setting: Optional[str], query: str) -> bool:
     if value == "auto":
         return _auto_thinking(query)
     return False
+
+
+# Public alias so the auto-escalation flow (routes/query.py) can pick the
+# first-pass thinking state without reaching into a private name.
+auto_first_thinking = _auto_thinking
+
+
+# Retrieval-budget bumps applied on an auto-mode escalation pass. "Insufficient
+# context" is usually a retrieval gap, so widen the candidate pools beyond the
+# LightRAG defaults (top_k=40, chunk_top_k=20); max_total_tokens (30000) leaves
+# room for the extra chunks.
+ESCALATION_PARAMS = {"top_k": 64, "chunk_top_k": 32}
+
+# Control-frame delimiter for out-of-band status notices on the plain-text query
+# stream. \x1e (ASCII Record Separator) never appears in LLM/answer text, so the
+# client can split it out unambiguously. Frame: SENTINEL + json + SENTINEL.
+STATUS_SENTINEL = "\x1e"
+
+
+def status_frame(message: str) -> str:
+    """Encode a one-off status notice for the query stream (see STATUS_SENTINEL)."""
+    return (
+        STATUS_SENTINEL
+        + json.dumps({"type": "status", "message": message})
+        + STATUS_SENTINEL
+    )
+
+
+# Signals that a fast (thinking-off) answer failed to ground. LightRAG returns a
+# fail_response ending in [no-context] when retrieval is empty, and its
+# rag_response prompt tells the model to say it lacks enough information when the
+# context is thin. Kept tight to avoid false positives -- a false positive wastes
+# a slow escalation pass on an already-good answer.
+_INSUFFICIENT_PATTERNS = re.compile(
+    r"\[no-context\]"
+    r"|not\s+(?:have\s+)?enough\s+(?:information|context)"
+    r"|do(?:es)?\s+not\s+have\s+enough"
+    r"|do(?:es)?\s+not\s+(?:contain|mention|provide|include)\b"
+    r"|cannot\s+be\s+found\s+in\s+the"
+    r"|no\s+(?:relevant\s+)?information\s+(?:is\s+)?(?:available|found|provided)"
+    r"|unable\s+to\s+(?:answer|provide)"
+    r"|insufficient\s+(?:information|context)",
+    re.IGNORECASE,
+)
+
+
+def looks_insufficient(answer: str) -> bool:
+    """True if a fast-pass answer admits it lacked enough grounded context."""
+    return bool(answer) and bool(_INSUFFICIENT_PATTERNS.search(answer))
 
 
 def _scrub_messages(messages: list) -> list:
@@ -296,6 +369,11 @@ def _build_llm_func(fast_llm_func):
             **kwargs.pop("extra_body", {}),
             "enable_thinking": synthesis_thinking.get(),
         }
+        # Cap reasoning length only when thinking is actually on; meaningless
+        # (and rejected by some models) otherwise.
+        budget = synthesis_thinking_budget.get()
+        if extra_body["enable_thinking"] and budget:
+            extra_body["thinking_budget"] = budget
         return _complete(
             settings.llm_model,
             prompt,

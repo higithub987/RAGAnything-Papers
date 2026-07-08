@@ -353,6 +353,75 @@
   .seg button + button {
     border-left: 1px solid var(--border);
   }
+  .budget-field {
+    flex: 0 0 auto;
+    width: 108px;
+  }
+  .budget-field input {
+    width: 100%;
+    padding: 7px 10px;
+    font-size: 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    box-sizing: border-box;
+  }
+  .budget-field input:focus {
+    outline: none;
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px var(--blue-shadow);
+  }
+  .budget-field input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .info-icon {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: 4px;
+    color: var(--text-muted);
+    cursor: help;
+    font-style: normal;
+    font-weight: 400;
+  }
+  .info-icon:hover,
+  .info-icon:focus {
+    color: var(--blue);
+    outline: none;
+  }
+  .info-pop {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: 0;
+    width: 260px;
+    padding: 10px 12px;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: var(--card-shadow);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.5;
+    text-align: left;
+    white-space: normal;
+    z-index: 20;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s ease;
+  }
+  .info-icon:hover .info-pop,
+  .info-icon:focus .info-pop,
+  .info-icon:focus-within .info-pop {
+    opacity: 1;
+    visibility: visible;
+  }
+  .info-pop strong {
+    font-weight: 700;
+  }
 </style>
 </head>
 <body>
@@ -398,6 +467,10 @@
               <button type="button" data-think="on">On</button>
             </div>
           </div>
+          <div class="budget-field">
+            <label for="think-budget">Budget<span class="info-icon" tabindex="0" role="note" aria-label="Thinking budget help">ⓘ<span class="info-pop"><strong>Thinking budget</strong> caps the model's hidden reasoning tokens on thinking-on answers. Empty = uncapped (deepest, slowest).<br><br><strong>Recommended 512–1024.</strong> Lower = faster, but may cut off hard multi-hop reasoning.<br><br>Scaling (~57 reasoning tok/s here): 512 ≈ +9 s, 1024 ≈ +18 s, 2048 ≈ +36 s.<br><br>Applies only when Thinking is On, or when Auto escalates. Ignored on non-thinking models.</span></span></label>
+            <input type="number" id="think-budget" min="0" step="128" placeholder="uncapped">
+          </div>
           <div class="mode-field">
             <label for="mode">Mode</label>
             <select id="mode" name="mode">
@@ -435,10 +508,23 @@
     const THINKING_KEY = "ragThinking";
     const thinkToggle = document.getElementById("think-toggle");
     let thinkingMode = localStorage.getItem(THINKING_KEY) || "off";
+
+    // Reasoning-token cap for thinking-on answers. Defaults to 1024; blank =
+    // uncapped. Disabled (no effect) when Thinking is Off.
+    const BUDGET_KEY = "ragThinkingBudget";
+    const budgetInput = document.getElementById("think-budget");
+    const savedBudget = localStorage.getItem(BUDGET_KEY);
+    budgetInput.value = savedBudget !== null ? savedBudget : "1024";
+    budgetInput.addEventListener("input", () => {
+      localStorage.setItem(BUDGET_KEY, budgetInput.value.trim());
+    });
+
     function applyThinkingMode() {
       for (const btn of thinkToggle.querySelectorAll("button")) {
         btn.classList.toggle("active", btn.dataset.think === thinkingMode);
       }
+      // Budget only affects thinking-on passes, so grey it out under Off.
+      budgetInput.disabled = thinkingMode === "off";
     }
     thinkToggle.addEventListener("click", (event) => {
       const btn = event.target.closest("button[data-think]");
@@ -801,8 +887,14 @@
       const paintStreamingBubble = () => {
         rafId = null;
         if (!streamingBubble) return;
-        streamingBubble.className = "bubble assistant answer";
-        streamingBubble.innerHTML = renderMarkdown(turn.text);
+        if (turn.kind === "answer") {
+          streamingBubble.className = "bubble assistant answer";
+          streamingBubble.innerHTML = renderMarkdown(turn.text);
+        } else {
+          // Loading / auto-escalation delay notice: plain text, muted style.
+          streamingBubble.className = "bubble assistant loading";
+          streamingBubble.textContent = turn.text;
+        }
         scrollMessagesToBottom();
       };
       // Coalesce bursts of chunks into at most one re-parse per animation frame.
@@ -811,10 +903,13 @@
       };
 
       try {
+        const budgetVal = parseInt(budgetInput.value, 10);
+        const thinking_budget =
+          Number.isFinite(budgetVal) && budgetVal > 0 ? budgetVal : null;
         const requestBody =
           currentMode === "chat"
-            ? { query, mode, thinking: thinkingMode, session_id: currentSessionId }
-            : { query, mode, thinking: thinkingMode, conversation_history: [] };
+            ? { query, mode, thinking: thinkingMode, thinking_budget, session_id: currentSessionId }
+            : { query, mode, thinking: thinkingMode, thinking_budget, conversation_history: [] };
         const response = await fetch("/query/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -837,22 +932,67 @@
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
+        // Auto mode may send an out-of-band status notice (delay warning)
+        // wrapped in \x1e … \x1e control frames. `raw` buffers undecoded bytes
+        // so a frame split across chunks is handled; `accumulated` is the
+        // frame-stripped answer text; `statusMsg` is the latest notice.
+        const STATUS_SENTINEL = "\u001e";
+        let raw = "";
         let accumulated = "";
-        let streamDone = false;
+        let statusMsg = null;
 
+        const extractFrames = () => {
+          while (true) {
+            const start = raw.indexOf(STATUS_SENTINEL);
+            if (start === -1) {
+              accumulated += raw;
+              raw = "";
+              return;
+            }
+            accumulated += raw.slice(0, start);
+            const end = raw.indexOf(STATUS_SENTINEL, start + 1);
+            if (end === -1) {
+              // Incomplete frame: keep it (from the opening sentinel) buffered.
+              raw = raw.slice(start);
+              return;
+            }
+            try {
+              const msg = JSON.parse(raw.slice(start + 1, end));
+              if (msg && msg.type === "status") statusMsg = msg.message;
+            } catch (_) {
+              // Malformed frame -- ignore it rather than dumping it as text.
+            }
+            raw = raw.slice(end + 1);
+          }
+        };
+
+        const applyStreamState = () => {
+          if (accumulated) {
+            turn.kind = "answer";
+            turn.text = accumulated;
+          } else if (statusMsg) {
+            turn.kind = "loading";
+            turn.text = statusMsg;
+          }
+          scheduleStreamingRender();
+        };
+
+        let streamDone = false;
         while (!streamDone) {
           const { done, value } = await reader.read();
           streamDone = done;
           if (value) {
-            accumulated += decoder.decode(value, { stream: true });
-            turn.kind = "answer";
-            turn.text = accumulated;
-            scheduleStreamingRender();
+            raw += decoder.decode(value, { stream: true });
+            extractFrames();
+            applyStreamState();
           }
         }
-        accumulated += decoder.decode();
-        turn.kind = "answer";
-        turn.text = accumulated;
+        raw += decoder.decode();
+        extractFrames();
+        if (accumulated) {
+          turn.kind = "answer";
+          turn.text = accumulated;
+        }
         if (rafId !== null) cancelAnimationFrame(rafId);
         renderMessages();
       } catch (err) {

@@ -74,6 +74,9 @@ class QueryRequest(BaseModel):
     # Synthesis-model thinking control: "off" (fast, default), "on", or "auto"
     # (route by query complexity). See rag_manager.resolve_thinking.
     thinking: str = "off"
+    # Cap on reasoning tokens when thinking is on; None = uncapped. See
+    # rag_manager.resolve_thinking_budget.
+    thinking_budget: Optional[int] = None
 
 
 class ChatSession(BaseModel):
@@ -126,14 +129,18 @@ class MultimodalQueryRequest(BaseModel):
     query: str
     multimodal_content: list[MultimodalItem]
     mode: str = "hybrid"
-    # See QueryRequest.thinking.
+    # See QueryRequest.thinking / thinking_budget.
     thinking: str = "off"
+    thinking_budget: Optional[int] = None
 
 
 class QueryResponse(BaseModel):
     answer: str
     query: str
     mode: str
+    # True when auto mode retried with thinking-on + wider retrieval because the
+    # fast first answer looked insufficient. Always False for on/off/stream paths.
+    escalated: bool = False
 
 
 class ErrorResponse(BaseModel):
