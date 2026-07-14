@@ -21,6 +21,7 @@ from raganything.callbacks import ProcessingCallback
 from raganything.utils import strip_thinking_tags
 
 from .config import settings
+from .milvus_health import wait_for_milvus_ready
 from .doc_names_store import (
     load_doc_names,
     save_doc_name,
@@ -659,6 +660,15 @@ def load_existing_documents() -> None:
 
 async def ensure_rag_ready() -> None:
     """Force LightRAG initialization at startup so queries work without uploading first."""
+    # Gate on Milvus being query-ready before storage init touches any
+    # collection. The MilvusVectorDBStorage init ends in a synchronous, no-timeout
+    # load_collection() (lightrag/kg/milvus_impl.py); if Milvus's QueryNodes
+    # aren't ready yet that call blocks the event loop indefinitely. Waiting here
+    # turns an unbounded hang into a bounded, loudly-failing wait.
+    await wait_for_milvus_ready(
+        settings.milvus_uri,
+        timeout_s=settings.milvus_ready_timeout_seconds,
+    )
     rag = get_rag()
     result = await rag._ensure_lightrag_initialized()
     if isinstance(result, dict) and not result.get("success", True):

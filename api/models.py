@@ -25,6 +25,22 @@ class DocumentTask(BaseModel):
     progress_message: Optional[str] = None
 
 
+class Container(BaseModel):
+    """A user-created grouping of documents ("container"/"database").
+
+    Membership is many-to-many: a document (identified by its LightRAG doc_id)
+    may belong to several containers. `id` is a generated uuid so a container can
+    be renamed without breaking membership. The virtual "All" view (query with no
+    container filter) is NOT a stored container -- the registry only holds real
+    user-created ones.
+    """
+
+    id: str
+    name: str
+    created_at: datetime
+    member_doc_ids: list[str] = []
+
+
 class TopicDetail(BaseModel):
     name: str
     entity_type: str = ""

@@ -62,6 +62,15 @@ services:
     volumes:
       - milvus_data:/var/lib/milvus
     command: milvus run standalone
+    healthcheck:
+      # Milvus is query-ready (not just container-up) once /healthz on the
+      # metrics port returns 200. Gate consumers on `condition: service_healthy`
+      # and/or start the API only after `docker compose ps` shows milvus healthy.
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
 
 volumes:
   etcd_data:
