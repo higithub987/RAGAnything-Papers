@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import sys
 from contextvars import ContextVar
@@ -29,6 +30,7 @@ from .doc_names_store import (
 from .models import TaskStatus
 from .relatedness_boost import get_boost, rerank
 from .task_store import (
+    advance_progress,
     complete_task,
     fail_task,
     get_task,
@@ -43,11 +45,29 @@ from .task_store import (
 class ProgressTrackingCallback(ProcessingCallback):
     """Mirrors RAGAnything's processing events into the API's task store.
 
-    Resolves the file path each event carries back to a task_id via
-    task_store's path index, then updates that task's stage/progress fields
-    so GET /documents/{task_id} reflects live progress instead of only
-    flipping between "processing" and "completed"/"failed".
+    Resolves the file path each event carries back to a task_id via task_store's
+    path index, then advances that task's stage/progress so GET /documents
+    reflects live progress.
+
+    Progress is a *single monotonic overall percentage* across the whole
+    pipeline (parse -> text_insert -> multimodal -> complete), not a per-stage
+    0-100 that resets. Each stage owns a weighted band of the 0-100 range; events
+    set the band boundaries and the (rare) real intra-stage signals interpolate
+    within them. The frontend fills the silent gaps between these milestones with
+    a time-based creep, so the bar keeps advancing during the long, event-less
+    text_insert (LLM extraction) phase. Bands (see the plan):
+        parsing      3 -> 20
+        text_insert 22 -> 65   (dominant phase; no intra events)
+        multimodal  67 -> 97   (has real item-level progress)
+        complete           100
     """
+
+    # Stage band boundaries as overall-progress percentages.
+    _PARSE_START = 3
+    _PARSE_END = 20
+    _TEXT_END = 65
+    _MM_START = 67
+    _MM_END = 97
 
     def _task_id_for(self, file_path: str) -> Optional[str]:
         return get_task_id_by_file_path(file_path)
@@ -55,8 +75,11 @@ class ProgressTrackingCallback(ProcessingCallback):
     def on_parse_start(self, file_path: str, **kwargs) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
-            update_progress(
-                task_id, stage="parsing", progress=0, message="Parsing started"
+            advance_progress(
+                task_id,
+                stage="parsing",
+                progress=self._PARSE_START,
+                message="Parsing started",
             )
 
     def on_parse_progress(
@@ -67,28 +90,48 @@ class ProgressTrackingCallback(ProcessingCallback):
         **kwargs,
     ) -> None:
         task_id = self._task_id_for(file_path)
-        if task_id:
-            update_progress(task_id, stage="parsing", progress=percent, message=message)
+        if not task_id:
+            return
+        # Map a real parse percentage (only some parsers emit one) into the parse
+        # band; when percent is None we still surface the live message but leave
+        # the numeric bar to the frontend creep.
+        overall = None
+        if percent is not None:
+            overall = self._PARSE_START + (percent / 100.0) * (
+                self._PARSE_END - self._PARSE_START
+            )
+        advance_progress(
+            task_id, stage="parsing", progress=overall, message=message
+        )
 
     def on_parse_complete(self, file_path: str, **kwargs) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
-            update_progress(
-                task_id, stage="parsing", progress=100, message="Parsing complete"
+            advance_progress(
+                task_id,
+                stage="parsing",
+                progress=self._PARSE_END,
+                message="Parsing complete",
             )
 
     def on_text_insert_start(self, file_path: str, **kwargs) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
-            update_progress(
-                task_id, stage="text_insert", progress=0, message="Inserting text"
+            advance_progress(
+                task_id,
+                stage="text_insert",
+                progress=self._PARSE_END + 2,
+                message="Extracting entities & relationships",
             )
 
     def on_text_insert_complete(self, file_path: str, **kwargs) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
-            update_progress(
-                task_id, stage="text_insert", progress=100, message="Text inserted"
+            advance_progress(
+                task_id,
+                stage="text_insert",
+                progress=self._TEXT_END,
+                message="Text indexed",
             )
 
     def on_multimodal_start(
@@ -96,8 +139,11 @@ class ProgressTrackingCallback(ProcessingCallback):
     ) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
-            update_progress(
-                task_id, stage="multimodal", progress=0, message=f"0/{item_count} items"
+            advance_progress(
+                task_id,
+                stage="multimodal",
+                progress=self._MM_START,
+                message=f"0/{item_count} items",
             )
 
     def on_multimodal_item_complete(
@@ -108,36 +154,41 @@ class ProgressTrackingCallback(ProcessingCallback):
         **kwargs,
     ) -> None:
         task_id = self._task_id_for(file_path)
-        if task_id:
-            progress = (item_index / total_items * 100) if total_items else None
-            update_progress(
-                task_id,
-                stage="multimodal",
-                progress=progress,
-                message=f"{item_index}/{total_items} items",
+        if not task_id:
+            return
+        overall = None
+        if total_items:
+            overall = self._MM_START + (item_index / total_items) * (
+                self._MM_END - self._MM_START
             )
+        advance_progress(
+            task_id,
+            stage="multimodal",
+            progress=overall,
+            message=f"{item_index}/{total_items} items",
+        )
 
     def on_multimodal_complete(self, file_path: str, **kwargs) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
-            update_progress(
+            advance_progress(
                 task_id,
                 stage="multimodal",
-                progress=100,
+                progress=self._MM_END,
                 message="Multimodal processing complete",
             )
 
     def on_document_complete(self, file_path: str, **kwargs) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
-            update_progress(
+            advance_progress(
                 task_id, stage="complete", progress=100, message="Document complete"
             )
 
     def on_document_error(self, file_path: str, error=None, **kwargs) -> None:
         task_id = self._task_id_for(file_path)
         if task_id:
-            update_progress(task_id, stage="failed", message=str(error))
+            advance_progress(task_id, stage="failed", message=str(error))
 
 
 _rag: Optional[RAGAnything] = None
@@ -449,8 +500,28 @@ def _build_embedding_func():
     )
 
 
+def _export_mineru_api_env() -> None:
+    """Mirror the MinerU cloud-API settings into os.environ.
+
+    MineruApiParser reads its token / base-url / model-version / TLS flag from the
+    process environment (so the same knobs work for the library, CLI, and API).
+    pydantic's Settings only reads .env into the settings object, not os.environ,
+    so bridge them here. setdefault keeps a real environment variable authoritative
+    over the .env-derived value.
+    """
+    if settings.mineru_api_token:
+        os.environ.setdefault("MINERU_API_TOKEN", settings.mineru_api_token)
+    os.environ.setdefault("MINERU_API_BASE_URL", settings.mineru_api_base_url)
+    os.environ.setdefault("MINERU_API_MODEL_VERSION", settings.mineru_api_model_version)
+    if settings.mineru_api_insecure:
+        os.environ.setdefault("MINERU_API_INSECURE", "true")
+
+
 def initialize_rag() -> RAGAnything:
     global _rag, _fast_llm_func
+    # Must run before RAGAnything is built so the parser's env-based config resolves.
+    if settings.parser in ("mineru-api", "mineru-cloud"):
+        _export_mineru_api_env()
     _fast_llm_func = _build_fast_llm_func()
     llm_func = _build_llm_func(_fast_llm_func)
     # LightRAG already runs a rerank step for every graph/vector query when
@@ -469,8 +540,8 @@ def initialize_rag() -> RAGAnything:
     _rag = RAGAnything(
         config=RAGAnythingConfig(
             working_dir=settings.working_dir,
-            parser="mineru",
-            parse_method="auto",
+            parser=settings.parser,
+            parse_method=settings.parse_method,
             enable_image_processing=True,
             enable_table_processing=True,
             enable_equation_processing=True,
@@ -537,7 +608,17 @@ def load_existing_documents() -> None:
     if not doc_status_path.exists():
         return
 
-    raw = json.loads(doc_status_path.read_text(encoding="utf-8"))
+    # Defense in depth: writers should be atomic (see lightrag write_json), but a
+    # bad/empty/partial read must never 500 the /documents endpoint. Skip this
+    # refresh on a transient bad read -- the in-memory task store keeps its
+    # existing entries and the next poll (~1s) repopulates.
+    try:
+        text = doc_status_path.read_text(encoding="utf-8")
+        raw = json.loads(text) if text.strip() else {}
+    except (OSError, json.JSONDecodeError):
+        _log.warning("doc_status unreadable this cycle; skipping refresh")
+        return
+
     doc_names = load_doc_names()
     for doc_id, entry in raw.items():
         raw_status = entry.get("status", "")
@@ -615,7 +696,13 @@ def _resolve_doc_id(file_path: str) -> Optional[str]:
     doc_status_path = Path(settings.working_dir) / "kv_store_doc_status.json"
     if not doc_status_path.exists():
         return None
-    raw = json.loads(doc_status_path.read_text(encoding="utf-8"))
+    # Tolerate a transient bad/empty read (see load_existing_documents); a missing
+    # doc_id here is already a handled outcome for the caller.
+    try:
+        text = doc_status_path.read_text(encoding="utf-8")
+        raw = json.loads(text) if text.strip() else {}
+    except (OSError, json.JSONDecodeError):
+        return None
     target_name = Path(file_path).name
     for doc_id, entry in raw.items():
         if Path(entry.get("file_path", "")).name == target_name:
@@ -634,12 +721,17 @@ async def process_document_task(task_id: str, file_path: str) -> None:
         start_processing(task_id)
         update_progress(task_id, stage="parsing", progress=0, message="Parsing started")
         try:
+            # MINERU_DEVICE_MODE only applies to the local mineru subprocess; the
+            # cloud API parser runs inference remotely and doesn't use it.
+            parse_kwargs = {}
+            if settings.parser == "mineru":
+                parse_kwargs["env"] = {"MINERU_DEVICE_MODE": "cuda"}
             await asyncio.wait_for(
                 get_rag().process_document_complete(
                     file_path=file_path,
                     output_dir=settings.output_dir,
-                    parse_method="auto",
-                    env={"MINERU_DEVICE_MODE": "cuda"},
+                    parse_method=settings.parse_method,
+                    **parse_kwargs,
                 ),
                 timeout=timeout_seconds,
             )

@@ -35,8 +35,12 @@ import tempfile
 import threading
 import logging
 import time
+import io
+import ssl
+import zipfile
 import urllib.parse
 import urllib.request
+import urllib.error
 import shutil
 from pathlib import Path
 from typing import (
@@ -1558,6 +1562,463 @@ class MineruParser(Parser):
             return False
 
 
+class MineruApiParser(MineruParser):
+    """
+    MinerU **online trial API** parser (mineru.net hosted service).
+
+    Runs document parsing entirely on MinerU's cloud, so no local GPU, model
+    download, or ``mineru`` CLI is required. It subclasses :class:`MineruParser`
+    to reuse all of the local output-handling machinery — ``_read_output_files``
+    (field normalization + absolute image paths), ``_unique_output_dir``, and the
+    base-class ``parse_office_doc`` / ``parse_text_file`` (which convert to PDF and
+    then call ``self.parse_pdf``, routing through the overridden method here).
+
+    Only the "run" step differs: instead of spawning the local subprocess, it
+    uploads the file to the batch API, polls for completion, downloads the result
+    zip, and extracts it into the output directory in the same layout the local
+    CLI produces.
+
+    Configuration (environment variables):
+        MINERU_API_TOKEN         Bearer token from mineru.net (required).
+        MINERU_API_BASE_URL      API base, default ``https://mineru.net``.
+        MINERU_API_MODEL_VERSION ``pipeline`` (default) or ``vlm``.
+        MINERU_API_INSECURE      ``true`` to skip TLS verification (dev/MITM only).
+        MINERU_API_CA_BUNDLE     Optional path to a CA bundle for TLS verification.
+
+    Notes:
+        - Data is uploaded to mineru.net — do not use for sensitive documents.
+        - Free-beta limits: 200 MB / 600 pages per file, 2,000 pages/day.
+    """
+
+    __slots__ = ()
+
+    logger = logging.getLogger(__name__)
+
+    # API hard limits (used for fail-fast validation before uploading).
+    MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB
+    MAX_PDF_PAGES = 600
+    # Formats the API accepts directly (Office/text are converted to PDF first by
+    # the inherited parse_office_doc / parse_text_file).
+    _API_IMAGE_FORMATS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
+    # Magic-byte signatures for content sniffing (extension is not trusted).
+    _MAGIC = {
+        ".pdf": [b"%PDF-"],
+        ".png": [b"\x89PNG\r\n\x1a\n"],
+        ".jpg": [b"\xff\xd8\xff"],
+        ".jpeg": [b"\xff\xd8\xff"],
+        ".gif": [b"GIF87a", b"GIF89a"],
+        ".bmp": [b"BM"],
+        ".webp": [b"RIFF"],  # RIFF....WEBP; RIFF prefix is sufficient here
+    }
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.base_url = os.environ.get("MINERU_API_BASE_URL", "https://mineru.net").rstrip(
+            "/"
+        )
+        self.token = os.environ.get("MINERU_API_TOKEN", "").strip()
+        self.model_version = os.environ.get("MINERU_API_MODEL_VERSION", "pipeline").strip()
+        self._insecure = os.environ.get("MINERU_API_INSECURE", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        self._ca_bundle = os.environ.get("MINERU_API_CA_BUNDLE", "").strip() or None
+        # Poll cadence / overall wait (seconds).
+        self.poll_interval = float(os.environ.get("MINERU_API_POLL_INTERVAL", "3"))
+        self.default_timeout = float(os.environ.get("MINERU_API_TIMEOUT", "1800"))
+
+    # -- TLS -------------------------------------------------------------
+    def _ssl_context(self) -> ssl.SSLContext:
+        if self._insecure:
+            self.logger.warning(
+                "MINERU_API_INSECURE is set: TLS certificate verification is DISABLED."
+            )
+            return ssl._create_unverified_context()
+        if self._ca_bundle:
+            return ssl.create_default_context(cafile=self._ca_bundle)
+        # Default context honors SSL_CERT_FILE/SSL_CERT_DIR and the system store.
+        # Fall back to certifi's bundle if the system store is unusable.
+        try:
+            return ssl.create_default_context()
+        except Exception:  # pragma: no cover - extremely rare
+            import certifi
+
+            return ssl.create_default_context(cafile=certifi.where())
+
+    # -- HTTP helpers ----------------------------------------------------
+    def _auth_headers(self) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+            "Accept": "*/*",
+        }
+
+    def _post_json(self, url: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            method="POST",
+            headers=self._auth_headers(),
+        )
+        with urllib.request.urlopen(
+            req, timeout=60, context=self._ssl_context()
+        ) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def _get_json(self, url: str) -> Dict[str, Any]:
+        req = urllib.request.Request(
+            url, headers={"Authorization": f"Bearer {self.token}"}
+        )
+        with urllib.request.urlopen(
+            req, timeout=60, context=self._ssl_context()
+        ) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def _put_file(self, url: str, data: bytes) -> None:
+        req = urllib.request.Request(url, data=data, method="PUT")
+        # The OSS presigned URL is signed with an EMPTY Content-Type; urllib would
+        # otherwise auto-add application/x-www-form-urlencoded and break the
+        # signature (SignatureDoesNotMatch 403).
+        req.add_header("Content-Type", "")
+        with urllib.request.urlopen(
+            req, timeout=300, context=self._ssl_context()
+        ) as resp:
+            if resp.status not in (200, 201, 204):
+                raise RuntimeError(f"Upload failed with HTTP {resp.status}")
+
+    @staticmethod
+    def _check_envelope(resp: Dict[str, Any], step: str) -> Dict[str, Any]:
+        """Validate the {code,msg,data} envelope; return the ``data`` payload."""
+        if not isinstance(resp, dict) or resp.get("code") not in (0, "0"):
+            code = resp.get("code") if isinstance(resp, dict) else "?"
+            msg = resp.get("msg") if isinstance(resp, dict) else str(resp)[:200]
+            raise RuntimeError(f"MinerU API {step} failed (code={code}): {msg}")
+        return resp.get("data", {}) or {}
+
+    # -- Input validation ------------------------------------------------
+    def _validate_upload(self, path: Path) -> None:
+        """Fail fast, locally, before spending quota on a bad upload."""
+        ext = path.suffix.lower()
+        if ext != ".pdf" and ext not in self._API_IMAGE_FORMATS:
+            raise ValueError(
+                f"MineruApiParser cannot upload '{ext}' files. Supported: .pdf and "
+                f"images {sorted(self._API_IMAGE_FORMATS)}. Office/text files are "
+                f"converted to PDF automatically before upload."
+            )
+
+        size = path.stat().st_size
+        if size == 0:
+            raise ValueError(f"File is empty (0 bytes): {path}")
+        if size > self.MAX_UPLOAD_BYTES:
+            raise ValueError(
+                f"File is {size / 1024 / 1024:.1f} MB, exceeds MinerU's "
+                f"{self.MAX_UPLOAD_BYTES // 1024 // 1024} MB upload limit: {path}"
+            )
+
+        # Content sniff: don't trust the extension.
+        signatures = self._MAGIC.get(ext)
+        if signatures:
+            with open(path, "rb") as fh:
+                head = fh.read(16)
+            if not any(head.startswith(sig) for sig in signatures):
+                raise ValueError(
+                    f"File content does not match its '{ext}' extension "
+                    f"(header={head[:8]!r}); refusing to upload {path}"
+                )
+
+        # Best-effort PDF page-count guard (pypdfium2 is a project dependency).
+        if ext == ".pdf":
+            try:
+                import pypdfium2 as pdfium
+
+                pdf = pdfium.PdfDocument(str(path))
+                try:
+                    n_pages = len(pdf)
+                finally:
+                    pdf.close()
+                if n_pages > self.MAX_PDF_PAGES:
+                    raise ValueError(
+                        f"PDF has {n_pages} pages, exceeds MinerU's "
+                        f"{self.MAX_PDF_PAGES}-page limit: {path}"
+                    )
+            except ValueError:
+                raise
+            except Exception as e:  # missing lib or unreadable — non-fatal
+                self.logger.debug(f"Skipping PDF page-count check for {path}: {e}")
+
+    # -- Archive safety --------------------------------------------------
+    @classmethod
+    def _safe_extract_zip(cls, blob: bytes, dest_dir: Path) -> None:
+        """Extract a zip with zip-slip protection (reject members escaping dest)."""
+        dest_root = dest_dir.resolve()
+        with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+            for member in zf.infolist():
+                name = member.filename
+                if name.endswith("/"):
+                    continue  # directory entry
+                target = (dest_dir / name).resolve()
+                if target != dest_root and not str(target).startswith(
+                    str(dest_root) + os.sep
+                ):
+                    raise RuntimeError(
+                        f"Refusing to extract '{name}': path escapes target directory"
+                    )
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(member) as src, open(target, "wb") as out:
+                    shutil.copyfileobj(src, out)
+
+    # -- Core cloud run --------------------------------------------------
+    def _run_mineru_api(
+        self,
+        input_path: Path,
+        base_output_dir: Path,
+        file_stem: str,
+        method: str = "auto",
+        lang: Optional[str] = None,
+        formula: bool = True,
+        table: bool = True,
+        start_page: Optional[int] = None,
+        end_page: Optional[int] = None,
+        model_version: Optional[str] = None,
+        timeout: Optional[float] = None,
+        progress_callback: Optional[Callable[[str], None]] = None,
+        **_ignored,
+    ) -> List[Dict[str, Any]]:
+        """Upload → poll → download → extract → read. Returns the content_list.
+
+        Extra MinerU-local kwargs (device, source, backend, vlm_url, env, ...) are
+        accepted and ignored so the shared call site does not error.
+        """
+        if not self.token:
+            raise RuntimeError(
+                "MINERU_API_TOKEN is not set. Get a token from https://mineru.net "
+                "and set it in your environment / .env."
+            )
+
+        def _progress(line: str) -> None:
+            self.logger.info(f"[MinerU-API] {line}")
+            if progress_callback is not None:
+                try:
+                    progress_callback(line)
+                except Exception:
+                    self.logger.debug("progress_callback raised; ignoring", exc_info=True)
+
+        # Step 1: request an upload URL + batch id.
+        data_id = hashlib.md5(str(input_path.resolve()).encode()).hexdigest()
+        request_body: Dict[str, Any] = {
+            "files": [{"name": input_path.name, "data_id": data_id}],
+            "model_version": (model_version or self.model_version),
+            "enable_formula": bool(formula),
+            "enable_table": bool(table),
+            "is_ocr": method == "ocr",
+        }
+        if lang:
+            request_body["language"] = lang
+        if start_page is not None or end_page is not None:
+            s = start_page if start_page is not None else ""
+            e = end_page if end_page is not None else ""
+            request_body["page_ranges"] = f"{s}-{e}"
+
+        _progress(f"Requesting upload URL for {input_path.name} ...")
+        data = self._check_envelope(
+            self._post_json(f"{self.base_url}/api/v4/file-urls/batch", request_body),
+            "file-urls/batch",
+        )
+        batch_id = data.get("batch_id")
+        file_urls = data.get("file_urls") or []
+        if not batch_id or not file_urls:
+            raise RuntimeError(
+                f"MinerU API did not return batch_id/file_urls: {data}"
+            )
+
+        # Step 2: upload the raw bytes to the presigned URL.
+        _progress("Uploading file ...")
+        self._put_file(file_urls[0], input_path.read_bytes())
+
+        # Step 3: poll until done/failed.
+        deadline = time.monotonic() + (
+            timeout if timeout is not None else self.default_timeout
+        )
+        poll_url = f"{self.base_url}/api/v4/extract-results/batch/{batch_id}"
+        zip_url = None
+        while True:
+            result_data = self._check_envelope(self._get_json(poll_url), "extract-results")
+            results = result_data.get("extract_result") or []
+            entry = next(
+                (r for r in results if r.get("data_id") == data_id),
+                results[0] if results else {},
+            )
+            state = entry.get("state")
+            if state == "failed":
+                raise RuntimeError(
+                    f"MinerU API parsing failed for {input_path.name}: "
+                    f"{entry.get('err_msg') or 'unknown error'}"
+                )
+            if state == "done":
+                zip_url = entry.get("full_zip_url")
+                _progress("Parsing done; downloading result ...")
+                break
+            prog = entry.get("extract_progress") or {}
+            if prog.get("total_pages"):
+                _progress(
+                    f"state={state} "
+                    f"{prog.get('extracted_pages', 0)}/{prog['total_pages']} pages"
+                )
+            else:
+                _progress(f"state={state} ...")
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"MinerU API did not finish within the timeout for "
+                    f"{input_path.name} (last state={state})."
+                )
+            time.sleep(self.poll_interval)
+
+        if not zip_url:
+            raise RuntimeError("MinerU API reported done but returned no full_zip_url")
+        if not zip_url.lower().startswith("https://"):
+            raise RuntimeError(f"Refusing non-HTTPS result URL: {zip_url}")
+
+        # Step 4: download + safely extract the result zip.
+        with urllib.request.urlopen(
+            zip_url, timeout=300, context=self._ssl_context()
+        ) as resp:
+            blob = resp.read()
+        if len(blob) > self.MAX_UPLOAD_BYTES * 2:  # generous cap on result size
+            raise RuntimeError("Result archive is unexpectedly large; aborting")
+
+        base_output_dir.mkdir(parents=True, exist_ok=True)
+        self._safe_extract_zip(blob, base_output_dir)
+
+        # The zip names files with a fresh UUID stem; normalize to our file_stem so
+        # the inherited _read_output_files() finds them. Prefer the classic
+        # *_content_list.json over the newer *_content_list_v2.json.
+        content_list_files = sorted(base_output_dir.glob("*_content_list.json"))
+        if not content_list_files:
+            raise RuntimeError(
+                "MinerU API result did not contain a *_content_list.json "
+                f"(members: {[p.name for p in base_output_dir.iterdir()]})"
+            )
+        src_json = content_list_files[0]
+        target_json = base_output_dir / f"{file_stem}_content_list.json"
+        if src_json != target_json:
+            shutil.move(str(src_json), str(target_json))
+
+        md_src = base_output_dir / "full.md"
+        if md_src.exists():
+            shutil.move(str(md_src), str(base_output_dir / f"{file_stem}.md"))
+
+        content_list, _ = self._read_output_files(
+            base_output_dir, file_stem, method=method
+        )
+        return content_list
+
+    # -- Public overrides ------------------------------------------------
+    def parse_pdf(
+        self,
+        pdf_path: Union[str, Path],
+        output_dir: Optional[str] = None,
+        method: str = "auto",
+        lang: Optional[str] = None,
+        progress_callback: Optional[Callable[[str], None]] = None,
+        **kwargs,
+    ) -> List[Dict[str, Any]]:
+        """Parse a PDF via the MinerU cloud API (no local MinerU compute)."""
+        pdf_path = Path(pdf_path)
+        if not pdf_path.exists():
+            raise FileNotFoundError(f"PDF file does not exist: {pdf_path}")
+
+        self._validate_upload(pdf_path)
+
+        if output_dir:
+            base_output_dir = self._unique_output_dir(output_dir, pdf_path)
+        else:
+            base_output_dir = pdf_path.parent / "mineru_output"
+
+        return self._run_mineru_api(
+            input_path=pdf_path,
+            base_output_dir=base_output_dir,
+            file_stem=pdf_path.stem,
+            method=method,
+            lang=lang,
+            progress_callback=progress_callback,
+            **kwargs,
+        )
+
+    def parse_image(
+        self,
+        image_path: Union[str, Path],
+        output_dir: Optional[str] = None,
+        lang: Optional[str] = None,
+        progress_callback: Optional[Callable[[str], None]] = None,
+        **kwargs,
+    ) -> List[Dict[str, Any]]:
+        """Parse an image via the MinerU cloud API.
+
+        Formats the API accepts natively are uploaded as-is; other formats
+        (e.g. .tiff) are converted to PNG first (reusing Pillow, like the local
+        MineruParser).
+        """
+        image_path = Path(image_path)
+        if not image_path.exists():
+            raise FileNotFoundError(f"Image file does not exist: {image_path}")
+
+        ext = image_path.suffix.lower()
+        actual_path = image_path
+        temp_dir = None
+        if ext not in self._API_IMAGE_FORMATS:
+            if ext not in self.IMAGE_FORMATS:
+                raise ValueError(
+                    f"Unsupported image format: {ext}. Supported: "
+                    f"{', '.join(sorted(self.IMAGE_FORMATS))}"
+                )
+            try:
+                from PIL import Image
+            except ImportError:
+                raise RuntimeError(
+                    "PIL/Pillow is required to convert this image format. "
+                    "Install it with: pip install Pillow"
+                )
+            temp_dir = Path(tempfile.mkdtemp(prefix="raganything_mineru_api_"))
+            actual_path = temp_dir / f"{image_path.stem}.png"
+            with Image.open(image_path) as img:
+                if img.mode not in ("RGB", "L"):
+                    img = img.convert("RGB")
+                img.save(actual_path, "PNG", optimize=True)
+
+        try:
+            self._validate_upload(actual_path)
+
+            if output_dir:
+                base_output_dir = self._unique_output_dir(output_dir, image_path)
+            else:
+                base_output_dir = image_path.parent / "mineru_output"
+
+            return self._run_mineru_api(
+                input_path=actual_path,
+                base_output_dir=base_output_dir,
+                file_stem=image_path.stem,
+                method="ocr",
+                lang=lang,
+                progress_callback=progress_callback,
+                **kwargs,
+            )
+        finally:
+            if temp_dir is not None:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def check_installation(self) -> bool:
+        """The cloud parser is 'installed' iff an API token is configured."""
+        if not self.token:
+            self.logger.debug(
+                "MINERU_API_TOKEN is not set; MineruApiParser is unavailable. "
+                "Get a token from https://mineru.net."
+            )
+            return False
+        return True
+
+
 class DoclingParser(Parser):
     """
     Docling document parsing utility class.
@@ -2541,7 +3002,7 @@ def register_parser(name: str, parser_class: type) -> None:
         raise TypeError(
             f"parser_class must be a subclass of Parser, got {parser_class!r}"
         )
-    _BUILTIN_NAMES = {"mineru", "docling", "paddleocr"}
+    _BUILTIN_NAMES = {"mineru", "mineru-api", "mineru-cloud", "docling", "paddleocr"}
     if normalized_name in _BUILTIN_NAMES:
         raise ValueError(
             f"Cannot override built-in parser '{normalized_name}'. "
@@ -2580,6 +3041,7 @@ def list_parsers() -> Dict[str, str]:
     """
     result: Dict[str, str] = {
         "mineru": "MineruParser",
+        "mineru-api": "MineruApiParser",
         "docling": "DoclingParser",
         "paddleocr": "PaddleOCRParser",
     }
@@ -2588,7 +3050,7 @@ def list_parsers() -> Dict[str, str]:
     return result
 
 
-SUPPORTED_PARSERS = ("mineru", "docling", "paddleocr")
+SUPPORTED_PARSERS = ("mineru", "mineru-api", "docling", "paddleocr")
 
 
 def get_supported_parsers() -> tuple:
@@ -2615,6 +3077,8 @@ def get_parser(parser_type: str) -> Parser:
     parser_name = (parser_type or "mineru").strip().lower()
     if parser_name == "mineru":
         return MineruParser()
+    if parser_name in ("mineru-api", "mineru-cloud"):
+        return MineruApiParser()
     if parser_name == "docling":
         return DoclingParser()
     if parser_name == "paddleocr":

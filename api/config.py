@@ -22,6 +22,23 @@ class Settings(BaseSettings):
     upload_dir: str = "./uploads"
     output_dir: str = "./output"
 
+    # Parser selection.
+    #   'mineru-api' — MinerU's hosted cloud API (default). No local GPU/model,
+    #                  and boot is instant (the local 'mineru' install-check
+    #                  shells out to `mineru --version`, which loads MinerU's
+    #                  full ML stack and adds ~70s to every startup).
+    #   'mineru'     — local MinerU (needs GPU + models; slow boot).
+    parser: str = "mineru-api"
+    parse_method: str = "auto"
+
+    # MinerU cloud API (used when parser == 'mineru-api'). These are mirrored into
+    # os.environ at startup because MineruApiParser reads them from the environment
+    # (see rag_manager.initialize_rag). Get a token from https://mineru.net.
+    mineru_api_token: str = ""
+    mineru_api_base_url: str = "https://mineru.net"
+    mineru_api_model_version: str = "pipeline"
+    mineru_api_insecure: bool = False
+
     # Safety net: a stuck/hung parser (e.g. mineru) must not block uploads
     # forever. Page count isn't known before parsing starts (office/text
     # files are only converted to PDF partway through the pipeline, and

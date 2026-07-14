@@ -4,6 +4,12 @@ from .config import RAGAnythingConfig as RAGAnythingConfig
 # Core parser class is always available.
 from .parser import Parser as Parser
 
+# MinerU cloud (online trial API) parser — optional, present in newer builds.
+try:
+    from .parser import MineruApiParser as MineruApiParser
+except ImportError:
+    pass
+
 # Optional: parser plugin APIs (only present in newer versions / when feature PR is merged).
 try:
     from .parser import (
@@ -66,6 +72,9 @@ __all__ = [
     "RAGAnythingConfig",
     "Parser",
 ]
+
+if "MineruApiParser" in globals():
+    __all__.append("MineruApiParser")
 
 # Feature-gated exports: only add names that are actually available in this build.
 if "register_parser" in globals():

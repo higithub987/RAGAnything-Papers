@@ -69,8 +69,8 @@ lightrag-dev/
 gui/
 tiktoken_cache/
 
-# unit-test files
-test_*
+# scratch test scripts at the repo root only (do NOT ignore the tests/ suite)
+/test_*.py
 
 # Cline files
 memory-bank/

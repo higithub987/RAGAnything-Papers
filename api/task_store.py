@@ -50,6 +50,32 @@ def update_progress(
         task.progress_message = message
 
 
+def advance_progress(
+    task_id: str,
+    *,
+    stage: Optional[str] = None,
+    progress: Optional[float] = None,
+    message: Optional[str] = None,
+) -> None:
+    """Like :func:`update_progress`, but never lets ``progress`` move backward.
+
+    The processing pipeline emits a single monotonic overall progress (0-100)
+    across parse -> text_insert -> multimodal -> complete. Clamping here means a
+    late or out-of-order callback can't rewind the bar. ``stage`` and ``message``
+    still update freely (only the numeric bar is monotonic).
+    """
+    task = _tasks.get(task_id)
+    if task is None:
+        return
+    if stage is not None:
+        task.stage = stage
+    if progress is not None:
+        current = task.progress or 0
+        task.progress = progress if progress > current else current
+    if message is not None:
+        task.progress_message = message
+
+
 def get_task_id_by_file_path(file_path: str) -> Optional[str]:
     return _path_index.get(Path(file_path).name)
 

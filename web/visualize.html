@@ -494,7 +494,11 @@
         nodeSel.call(drag(simulation));
         simulation.stop(); // deploy() drives the layout; don't paint the un-settled seed
 
+        // A drag lifts the boundary (see dragstarted) so nodes can be placed
+        // freely past any edge; "Reset view" restores it (see resetView).
+        let clampEnabled = true;
         function clampNodes() {
+          if (!clampEnabled) return;
           nodes.forEach((d) => {
             const padX = Math.max(radius(d), d.labelHalfWidth || 0) + 6;
             const padTop = radius(d) + 6;
@@ -577,6 +581,7 @@
 
         // "Reset view" -- only re-centers the layout; leaves edits untouched.
         function resetView() {
+          clampEnabled = true; // re-impose the boundary; deploy() re-settles nodes inside it
           svg.transition().duration(400).call(zoomBehavior.transform, d3.zoomIdentity);
           deploy();
         }
@@ -824,6 +829,7 @@
         function drag(sim) {
           function dragstarted(event, d) {
             if (!event.active) sim.alphaTarget(0.3).restart();
+            clampEnabled = false; // moving nodes lifts the boundary until "Reset view"
             d.fx = d.x;
             d.fy = d.y;
           }

@@ -108,16 +108,17 @@ class TestListParsers:
     def test_list_builtin_only(self):
         result = list_parsers()
         assert "mineru" in result
+        assert "mineru-api" in result
         assert "docling" in result
         assert "paddleocr" in result
-        assert len(result) == 3
+        assert len(result) == 4
 
     def test_list_includes_custom(self):
         register_parser("dummy", DummyParser)
         result = list_parsers()
         assert "dummy" in result
         assert result["dummy"] == "DummyParser"
-        assert len(result) == 4
+        assert len(result) == 5
 
 
 class TestGetSupportedParsers:

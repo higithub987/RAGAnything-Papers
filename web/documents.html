@@ -291,6 +291,84 @@
     const taskCache = new Map();
     let pollHandle = null;
 
+    // --- Progress bar creep --------------------------------------------------
+    // The backend emits one monotonic overall % across the whole pipeline, but
+    // the dominant text_insert (LLM extraction) phase has no intra-progress
+    // events, so between real milestones the bar would sit still. We fill those
+    // gaps client-side: each stage owns a [start,end] band and a rough duration
+    // estimate; the bar creeps linearly from start toward end over that estimate
+    // and simply parks at `end` if the stage runs long (that's fine) until the
+    // next real milestone snaps it forward. Bands mirror ProgressTrackingCallback.
+    const STAGE_BANDS = {
+      queued:      { start: 0,   end: 3,   estMs: 2000 },
+      parsing:     { start: 3,   end: 20,  estMs: 20000 },
+      text_insert: { start: 22,  end: 65,  estMs: 60000 },
+      multimodal:  { start: 67,  end: 97,  estMs: 30000 },
+      complete:    { start: 100, end: 100, estMs: 1 },
+      failed:      { start: 0,   end: 0,   estMs: 1 },
+    };
+    const stageBand = (stage) => STAGE_BANDS[stage] || STAGE_BANDS.queued;
+
+    // task_id -> { displayed, stage, stageEnteredAt }
+    const creepState = new Map();
+    let creepHandle = null;
+
+    // Fold the latest server snapshot into a task's creep state (monotonic).
+    function syncCreep(task) {
+      const now = Date.now();
+      let st = creepState.get(task.task_id);
+      if (!st) {
+        st = { displayed: 0, stage: null, stageEnteredAt: now };
+        creepState.set(task.task_id, st);
+      }
+      const stage = task.stage || "queued";
+      if (stage !== st.stage) {
+        st.stage = stage;
+        st.stageEnteredAt = now; // restart the clock for the new band
+      }
+      const server = task.progress == null ? 0 : task.progress;
+      if (server > st.displayed) st.displayed = server; // absorb real milestone
+      if (task.status === "completed") st.displayed = 100;
+      return st;
+    }
+
+    // Advance each active bar toward its band end and paint it, without a full
+    // re-render (keeps motion smooth between the 1s polls).
+    function creepTick() {
+      const active = findActiveTasks();
+      if (!active.length) {
+        stopCreep();
+        return;
+      }
+      const activeIds = new Set(active.map((t) => t.task_id));
+      for (const id of creepState.keys()) {
+        if (!activeIds.has(id)) creepState.delete(id); // prune finished tasks
+      }
+      const now = Date.now();
+      for (const task of active) {
+        const st = creepState.get(task.task_id);
+        if (!st) continue;
+        const band = stageBand(st.stage);
+        const frac = Math.min(1, (now - st.stageEnteredAt) / band.estMs);
+        const target = band.start + frac * (band.end - band.start);
+        if (target > st.displayed) st.displayed = target;
+        const el = progressPanel.querySelector(
+          `progress[data-task-id="${task.task_id}"]`
+        );
+        if (el) el.value = st.displayed;
+      }
+    }
+
+    function ensureCreep() {
+      if (!creepHandle) creepHandle = setInterval(creepTick, 200);
+    }
+    function stopCreep() {
+      if (creepHandle) {
+        clearInterval(creepHandle);
+        creepHandle = null;
+      }
+    }
+
     // Uploads can briefly appear as two task entries: the live upload task
     // (plain UUID task_id) and a synthesized snapshot the server re-derives
     // from on-disk doc status (task_id is the content-hash doc_id, always
@@ -346,6 +424,7 @@
       if (!active.length) {
         dropzone.style.display = "";
         progressPanel.style.display = "none";
+        stopCreep();
         return;
       }
 
@@ -353,14 +432,18 @@
       progressPanel.style.display = "block";
       progressPanel.innerHTML = active
         .map((task) => {
-          const progressAttr =
-            task.progress === null || task.progress === undefined
-              ? ""
-              : ` value="${task.progress}"`;
+          // Always render a numeric value (from the monotonic creep state) so an
+          // active bar never falls back to the browser's indeterminate animation.
+          // Use the RAW displayed value (no rounding) so this 1s re-render and the
+          // 200ms creep tick (which sets el.value = st.displayed) always agree --
+          // rounding here would round up past the raw creep value and cause a
+          // per-second backward "snap-back" just before each band boundary.
+          const st = syncCreep(task);
+          const value = st.displayed;
           return `
             <div class="progress-item">
               <p class="progress-filename">${escapeHtml(task.file_name)}</p>
-              <progress max="100"${progressAttr}></progress>
+              <progress max="100" value="${value}" data-task-id="${escapeHtml(task.task_id)}"></progress>
               <p class="progress-meta">
                 <span class="progress-stage">${escapeHtml(task.stage || "queued")}</span>
                 <span class="progress-message">${escapeHtml(task.progress_message || "")}</span>
@@ -369,6 +452,7 @@
           `;
         })
         .join("");
+      ensureCreep();
     }
 
     function render() {
