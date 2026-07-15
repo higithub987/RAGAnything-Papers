@@ -16,6 +16,13 @@ class Settings(BaseSettings):
     # Milvus
     milvus_uri: str = "http://localhost:19530"
     milvus_db_name: str = "lightrag"
+    # How long to wait at startup for Milvus to become *query-ready* (not just
+    # container-up) before failing. Milvus's proxy answers on 19530 before its
+    # QueryNodes can serve a load; starting the API in that window makes the
+    # blocking load_collection() hang. We gate on this instead (see
+    # milvus_health.wait_for_milvus_ready). Generous so a slow cold Milvus start
+    # isn't aborted; a truly-down Milvus fails loudly after it elapses.
+    milvus_ready_timeout_seconds: int = 120
 
     # Storage paths (relative to where the server is launched from)
     working_dir: str = "./rag_storage"
