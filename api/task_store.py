@@ -13,13 +13,19 @@ _path_index: dict[str, str] = {}
 
 
 def create_task(
-    task_id: str, file_name: str, on_disk_name: Optional[str] = None
+    task_id: str,
+    file_name: str,
+    on_disk_name: Optional[str] = None,
+    container_ids: Optional[list[str]] = None,
 ) -> DocumentTask:
     task = DocumentTask(
         task_id=task_id,
         file_name=file_name,
         status=TaskStatus.PENDING,
         created_at=datetime.now(timezone.utc),
+        # The upload's chosen container(s), carried on the task until the doc_id
+        # resolves (see rag_manager.record_task_containers); empty means "All".
+        container_ids=list(container_ids or []),
     )
     _tasks[task_id] = task
     if on_disk_name is not None:

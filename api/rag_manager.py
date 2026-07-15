@@ -21,6 +21,7 @@ from raganything.callbacks import ProcessingCallback
 from raganything.utils import strip_thinking_tags
 
 from .config import settings
+from .container_store import get_registry
 from .milvus_health import wait_for_milvus_ready
 from .doc_names_store import (
     load_doc_names,
@@ -720,6 +721,22 @@ def _resolve_doc_id(file_path: str) -> Optional[str]:
     return None
 
 
+def record_task_containers(task, doc_id: str) -> None:
+    """Apply a task's pending container choice to the registry once its doc_id exists.
+
+    Upload records the chosen container on the task (DocumentTask.container_ids)
+    before the LightRAG doc_id is known; registry membership is keyed by doc_id, so
+    it can only be written here, when the doc_id resolves. A no-op when the upload
+    chose "All" (empty container_ids). Kept as a small standalone helper so the
+    membership wiring is unit-testable without the parse pipeline.
+    """
+    if task is None:
+        return
+    registry = get_registry()
+    for container_id in task.container_ids:
+        registry.add_document(container_id, doc_id)
+
+
 async def process_document_task(task_id: str, file_path: str) -> None:
     timeout_seconds = _compute_timeout_seconds(file_path)
     update_progress(
@@ -771,3 +788,4 @@ async def process_document_task(task_id: str, file_path: str) -> None:
                 task = get_task(task_id)
                 if task is not None:
                     save_doc_name(doc_id, task.file_name)
+                    record_task_containers(task, doc_id)

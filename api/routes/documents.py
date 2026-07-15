@@ -4,9 +4,10 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, UploadFile
 
 from ..config import settings
+from ..container_store import get_registry
 from ..models import (
     DocumentRelatedness,
     DocumentTask,
@@ -49,8 +50,38 @@ def _cleanup_upload_artifacts(doc_status: Optional[dict[str, Any]]) -> None:
         shutil.rmtree(output_subdir, ignore_errors=True)
 
 
+def _resolve_upload_container(container_id: Optional[str]) -> list[str]:
+    """Turn the upload's container choice into a membership list.
+
+    None/empty/"all" (case-insensitive) means the virtual "All" view -> no
+    specific container (empty list). Any other value must be an existing
+    container id, else 400.
+    """
+    if not container_id or container_id.strip().lower() == "all":
+        return []
+    cid = container_id.strip()
+    if get_registry().get(cid) is None:
+        raise HTTPException(status_code=400, detail=f"Unknown container {cid!r}")
+    return [cid]
+
+
+def _enrich_containers(task: DocumentTask) -> DocumentTask:
+    """Populate a task's container_ids from the registry (authoritative once the
+    doc_id exists). Leaves the upload-time pending choice intact for docs that
+    don't have a doc_id yet."""
+    if task.doc_id:
+        task.container_ids = get_registry().containers_for_document(task.doc_id)
+    return task
+
+
 @router.post("", response_model=DocumentTask, status_code=202)
-async def upload_document(file: UploadFile, background_tasks: BackgroundTasks):
+async def upload_document(
+    file: UploadFile,
+    background_tasks: BackgroundTasks,
+    container_id: Optional[str] = Form(None),
+):
+    container_ids = _resolve_upload_container(container_id)
+
     upload_path = Path(settings.upload_dir)
     upload_path.mkdir(parents=True, exist_ok=True)
 
@@ -58,7 +89,9 @@ async def upload_document(file: UploadFile, background_tasks: BackgroundTasks):
     dest = upload_path / f"{task_id}_{file.filename}"
     dest.write_bytes(await file.read())
 
-    task = create_task(task_id, file.filename, on_disk_name=dest.name)
+    task = create_task(
+        task_id, file.filename, on_disk_name=dest.name, container_ids=container_ids
+    )
     background_tasks.add_task(process_document_task, task_id, str(dest))
     return task
 
@@ -66,7 +99,7 @@ async def upload_document(file: UploadFile, background_tasks: BackgroundTasks):
 @router.get("", response_model=list[DocumentTask])
 def list_documents():
     load_existing_documents()
-    return list_tasks()
+    return [_enrich_containers(task) for task in list_tasks()]
 
 
 @router.get("/relatedness", response_model=list[DocumentRelatedness])
@@ -113,7 +146,7 @@ def get_document_status(task_id: str):
     task = get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task {task_id!r} not found")
-    return task
+    return _enrich_containers(task)
 
 
 @router.delete("/{task_id}", status_code=204)
@@ -132,5 +165,9 @@ async def delete_document(task_id: str):
                 detail=f"Could not delete document {task.doc_id!r}: {result.message}",
             )
         _cleanup_upload_artifacts(doc_status)
+        # Whole-database delete: drop the doc from every container so no
+        # membership is left dangling. (Removing from a single container is the
+        # non-destructive containers-router endpoint, not this.)
+        get_registry().forget_document(task.doc_id)
 
     delete_task(task_id)

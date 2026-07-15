@@ -12,6 +12,7 @@ from .rag_manager import (
     initialize_rag,
     load_existing_documents,
 )
+from .routes.containers import router as containers_router
 from .routes.documents import router as documents_router
 from .routes.query import router as query_router
 from .routes.sessions import router as sessions_router
@@ -54,9 +55,11 @@ async def revalidate_html(request, call_next):
         response.headers["Cache-Control"] = "no-cache"
     return response
 
+
 app.include_router(documents_router)
 app.include_router(query_router)
 app.include_router(sessions_router)
+app.include_router(containers_router)
 
 
 @app.get("/health")

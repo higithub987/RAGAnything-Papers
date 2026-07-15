@@ -23,6 +23,9 @@ class DocumentTask(BaseModel):
     stage: Optional[str] = None
     progress: Optional[float] = None
     progress_message: Optional[str] = None
+    # Containers this document belongs to (display only). Seeded at upload with the
+    # chosen container, then refreshed from the registry on read once doc_id exists.
+    container_ids: list[str] = []
 
 
 class Container(BaseModel):
@@ -39,6 +42,18 @@ class Container(BaseModel):
     name: str
     created_at: datetime
     member_doc_ids: list[str] = []
+
+
+class ContainerNameRequest(BaseModel):
+    """Body for creating or renaming a container."""
+
+    name: str
+
+
+class AssignDocumentRequest(BaseModel):
+    """Body for filing a document (by its LightRAG doc_id) into a container."""
+
+    doc_id: str
 
 
 class TopicDetail(BaseModel):
