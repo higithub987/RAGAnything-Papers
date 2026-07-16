@@ -251,6 +251,44 @@
     stroke-width: 3px;
     stroke-linejoin: round;
   }
+  .graph-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 4px 0 14px;
+  }
+  .graph-toolbar-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-faint);
+  }
+  .container-filter {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .container-chip {
+    padding: 5px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-strong);
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .container-chip:hover {
+    background: var(--bg);
+  }
+  .container-chip.active {
+    background: var(--blue);
+    border-color: var(--blue);
+    color: #fff;
+  }
 </style>
 </head>
 <body>
@@ -269,6 +307,10 @@
   <div class="card">
     <h1>Knowledge graph</h1>
     <p class="subtitle">Explore how your documents relate to each other. Line thickness reflects how strongly two documents are related.</p>
+    <div class="graph-toolbar" id="graph-toolbar" style="display: none;">
+      <span class="graph-toolbar-label">Show</span>
+      <div class="container-filter" id="container-filter"></div>
+    </div>
     <div class="graph-container" id="graph-container">
       <svg id="graph-svg"></svg>
       <div class="connection-popover" id="connection-popover" style="display: none;"></div>
@@ -296,6 +338,20 @@
       popoverEl.addEventListener("click", (event) => event.stopPropagation());
 
       const RELATEDNESS_THRESHOLD = 0.35;
+
+      // The currently-rendered graph exposes a tiny interface (hidePopover) so the
+      // document-level listeners registered once below always target the latest
+      // render, instead of stacking a fresh pair on every container re-render.
+      let activeGraph = null;
+      document.addEventListener("click", () => activeGraph && activeGraph.hidePopover());
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && activeGraph) activeGraph.hidePopover();
+      });
+
+      // Container filter state: [] = the virtual "All" view (no scoping); one or more
+      // ids = the strict union of those containers. Populated from GET /containers.
+      let containers = [];
+      let selectedContainerIds = [];
 
       function showEmpty(message) {
         containerEl.style.display = "none";
@@ -347,6 +403,12 @@
       }
 
       function renderGraph(nodes, links, initialOverrides = {}) {
+        // renderGraph is re-run on every container selection change, so wipe the
+        // previous render's SVG content and zoom listeners before re-appending
+        // (the layer/append logic below is otherwise additive).
+        d3.select(svgEl).selectAll("*").remove();
+        d3.select(svgEl).on(".zoom", null);
+
         const nodeCount = nodes.length;
         const heightFraction = d3.scaleLinear().domain([2, 50]).range([0.55, 0.85]).clamp(true);
         const targetHeight = Math.max(480, window.innerHeight * heightFraction(nodeCount));
@@ -600,8 +662,10 @@
           await refreshOverrides();
         }
 
-        document.getElementById("graph-reset-btn").addEventListener("click", resetView);
-        document.getElementById("graph-reset-edits-btn").addEventListener("click", resetEdits);
+        // .onclick (not addEventListener) so a re-render replaces the prior render's
+        // handler instead of stacking one that closes over stale, removed elements.
+        document.getElementById("graph-reset-btn").onclick = resetView;
+        document.getElementById("graph-reset-edits-btn").onclick = resetEdits;
 
         function highlightForLink(link) {
           linkSel.classed("dimmed", (d) => d !== link);
@@ -821,10 +885,9 @@
           applyPinned();
         }
 
-        document.addEventListener("click", hidePopover);
-        document.addEventListener("keydown", (event) => {
-          if (event.key === "Escape") hidePopover();
-        });
+        // Publish this render to the document-level listeners registered once at the
+        // top of the IIFE (they call activeGraph.hidePopover()).
+        activeGraph = { hidePopover };
 
         function drag(sim) {
           function dragstarted(event, d) {
@@ -846,36 +909,107 @@
         deploy();
       }
 
-      let pairs;
-      try {
-        const response = await fetch("/documents/relatedness");
-        if (!response.ok) {
-          const body = await response.json().catch(() => ({}));
-          throw new Error(body.detail || `Request failed (${response.status})`);
+      function relatednessUrl(ids) {
+        if (!ids.length) return "/documents/relatedness";
+        const qs = ids
+          .map((id) => `container_ids=${encodeURIComponent(id)}`)
+          .join("&");
+        return `/documents/relatedness?${qs}`;
+      }
+
+      function renderContainerFilter() {
+        const toolbarEl = document.getElementById("graph-toolbar");
+        const filterEl = document.getElementById("container-filter");
+        // Nothing to scope by until the user has created containers.
+        if (!containers.length) {
+          toolbarEl.style.display = "none";
+          return;
         }
-        pairs = await response.json();
-      } catch (err) {
-        showEmpty("Could not load the knowledge graph. Try refreshing the page.");
-        return;
+        toolbarEl.style.display = "flex";
+
+        const chip = (id, label) => {
+          const active = id
+            ? selectedContainerIds.includes(id)
+            : selectedContainerIds.length === 0; // the "All" chip
+          return `<button type="button" class="container-chip${
+            active ? " active" : ""
+          }" data-id="${id ? escapeHtml(id) : ""}">${escapeHtml(label)}</button>`;
+        };
+
+        filterEl.innerHTML =
+          chip("", "All documents") +
+          containers.map((c) => chip(c.id, c.name)).join("");
+
+        filterEl.querySelectorAll(".container-chip").forEach((btn) => {
+          btn.onclick = () => {
+            const id = btn.dataset.id;
+            if (!id) {
+              selectedContainerIds = []; // "All" clears the selection
+            } else {
+              // Toggle this container in/out of the union selection.
+              selectedContainerIds = selectedContainerIds.includes(id)
+                ? selectedContainerIds.filter((x) => x !== id)
+                : [...selectedContainerIds, id];
+            }
+            renderContainerFilter(); // repaint active states
+            loadAndRender();
+          };
+        });
       }
 
-      if (!pairs.length) {
-        showEmpty("Not enough documents yet — upload at least two to see relationships.");
-        return;
+      async function loadContainers() {
+        try {
+          const r = await fetch("/containers");
+          if (r.ok) containers = await r.json();
+        } catch (err) {
+          /* no containers / offline -- fall back to the unscoped All view */
+        }
+        renderContainerFilter();
       }
 
-      // Load any persisted (applied) relatedness overrides so the graph renders
-      // with the user's edits instead of the raw computed scores. Non-fatal.
-      let initialOverrides = {};
-      try {
-        const r = await fetch("/documents/relatedness/overrides");
-        if (r.ok) initialOverrides = (await r.json()).overrides || {};
-      } catch (err) {
-        /* no saved overrides / offline -- fall back to computed scores */
+      async function loadAndRender() {
+        let pairs;
+        try {
+          const response = await fetch(relatednessUrl(selectedContainerIds));
+          if (!response.ok) {
+            const body = await response.json().catch(() => ({}));
+            throw new Error(body.detail || `Request failed (${response.status})`);
+          }
+          pairs = await response.json();
+        } catch (err) {
+          showEmpty("Could not load the knowledge graph. Try refreshing the page.");
+          return;
+        }
+
+        if (!pairs.length) {
+          showEmpty(
+            selectedContainerIds.length
+              ? "No related documents in the selected container(s) yet."
+              : "Not enough documents yet — upload at least two to see relationships."
+          );
+          return;
+        }
+
+        // Load any persisted (applied) relatedness overrides so the graph renders
+        // with the user's edits instead of the raw computed scores. Non-fatal.
+        let initialOverrides = {};
+        try {
+          const r = await fetch("/documents/relatedness/overrides");
+          if (r.ok) initialOverrides = (await r.json()).overrides || {};
+        } catch (err) {
+          /* no saved overrides / offline -- fall back to computed scores */
+        }
+
+        // Restore the graph surface if a prior (empty) selection hid it.
+        containerEl.style.display = "";
+        emptyStateEl.style.display = "none";
+
+        const { nodes, links } = toGraph(pairs);
+        renderGraph(nodes, links, initialOverrides);
       }
 
-      const { nodes, links } = toGraph(pairs);
-      renderGraph(nodes, links, initialOverrides);
+      await loadContainers();
+      await loadAndRender();
     })();
   </script>
 </body>

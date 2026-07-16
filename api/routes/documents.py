@@ -4,9 +4,10 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Query, UploadFile
 
 from ..config import settings
+from ..container_scope import resolve_scope
 from ..container_store import get_registry
 from ..models import (
     DocumentRelatedness,
@@ -16,7 +17,11 @@ from ..models import (
     RelatednessOverridesResponse,
 )
 from ..rag_manager import get_rag, load_existing_documents, process_document_task
-from ..relatedness import compute_relatedness, get_document_topics
+from ..relatedness import (
+    compute_relatedness,
+    filter_relatedness_pairs,
+    get_document_topics,
+)
 from ..relatedness_boost import get_boost
 from ..task_store import create_task, delete_task, get_task, list_tasks
 
@@ -103,8 +108,18 @@ def list_documents():
 
 
 @router.get("/relatedness", response_model=list[DocumentRelatedness])
-async def get_relatedness():
-    return await compute_relatedness()
+async def get_relatedness(container_ids: list[str] = Query(default=[])):
+    """Document-relatedness graph, optionally scoped to container(s).
+
+    Empty selection -> the virtual "All" (every document). One or more container_ids ->
+    the strict subgraph whose edges connect two in-scope documents (union across the
+    selected containers). A selection that resolves to no documents short-circuits to
+    an empty graph without running the (embedding-heavy) relatedness compute.
+    """
+    scope = resolve_scope(container_ids)
+    if scope.matches_nothing:
+        return []
+    return filter_relatedness_pairs(await compute_relatedness(), scope)
 
 
 def _overrides_response() -> RelatednessOverridesResponse:

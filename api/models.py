@@ -108,6 +108,9 @@ class QueryRequest(BaseModel):
     # Cap on reasoning tokens when thinking is on; None = uncapped. See
     # rag_manager.resolve_thinking_budget.
     thinking_budget: Optional[int] = None
+    # Containers to scope retrieval to. Empty = the virtual "All" (no scoping);
+    # several ids = union (cross-container). See api/container_scope.resolve_scope.
+    container_ids: list[str] = []
 
 
 class ChatSession(BaseModel):
@@ -163,6 +166,8 @@ class MultimodalQueryRequest(BaseModel):
     # See QueryRequest.thinking / thinking_budget.
     thinking: str = "off"
     thinking_budget: Optional[int] = None
+    # See QueryRequest.container_ids.
+    container_ids: list[str] = []
 
 
 class QueryResponse(BaseModel):

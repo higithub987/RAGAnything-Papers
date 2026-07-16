@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from raganything.reconciliation import reconcile_orphaned_documents
 
+from .logging_setup import configure_api_logging
 from .rag_manager import (
     ensure_rag_ready,
     get_rag,
@@ -20,6 +21,9 @@ from .routes.sessions import router as sessions_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Make api.* INFO visible before anything logs (uvicorn configures only its own
+    # loggers), so e.g. the container scope-patch confirmation shows on startup.
+    configure_api_logging()
     initialize_rag()
     await ensure_rag_ready()
     # Roll back any doc_ids left stuck in HANDLING/PROCESSING/PENDING by a

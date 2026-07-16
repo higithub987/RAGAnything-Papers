@@ -22,6 +22,7 @@ from raganything.utils import strip_thinking_tags
 
 from .config import settings
 from .container_store import get_registry
+from .lightrag_scope import apply_scope_patches
 from .milvus_health import wait_for_milvus_ready
 from .doc_names_store import (
     load_doc_names,
@@ -521,6 +522,9 @@ def _export_mineru_api_env() -> None:
 
 def initialize_rag() -> RAGAnything:
     global _rag, _fast_llm_func
+    # Install the container query-scoping wrappers on lightrag.operate before any
+    # query runs (idempotent; a no-op unless a query sets the query_scope contextvar).
+    apply_scope_patches()
     # Must run before RAGAnything is built so the parser's env-based config resolves.
     if settings.parser in ("mineru-api", "mineru-cloud"):
         _export_mineru_api_env()

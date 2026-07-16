@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from .. import session_store
+from ..container_scope import resolve_scope
+from ..lightrag_scope import query_scope
 from ..models import (
     CondenseHistoryRequest,
     CondenseHistoryResponse,
@@ -29,6 +31,13 @@ from raganything.utils import strip_thinking_tags
 
 router = APIRouter(prefix="/query", tags=["query"])
 logger = logging.getLogger(__name__)
+
+# Shown (instead of calling the model) when a query is scoped to container(s) that
+# contain no documents -- see rag_manager/container_scope. ContainerScope.matches_nothing.
+NO_CONTAINER_MATCH = (
+    "There are no documents in the selected container(s) yet, so there's nothing "
+    "to answer from. Add documents to this container or switch to All."
+)
 
 # Strong refs to in-flight background condense tasks so they aren't GC'd mid-run.
 _background_tasks: set = set()
@@ -176,6 +185,17 @@ async def text_query(request: QueryRequest):
         elif request.conversation_history:
             kwargs["conversation_history"] = request.conversation_history
 
+        scope = resolve_scope(request.container_ids)
+        if scope.matches_nothing:
+            if session is not None:
+                session_store.add_turn(session, request.query, NO_CONTAINER_MATCH)
+                _schedule_condense(session)
+            return QueryResponse(
+                answer=NO_CONTAINER_MATCH, query=request.query, mode=request.mode
+            )
+        # text_query runs aquery inline, so one set covers every branch below.
+        query_scope.set(scope)
+
         synthesis_thinking_budget.set(resolve_thinking_budget(request.thinking_budget))
         escalated = False
         if request.thinking == "auto":
@@ -230,6 +250,12 @@ async def condense_history_endpoint(request: CondenseHistoryRequest):
 async def multimodal_query(request: MultimodalQueryRequest):
     try:
         content = _to_multimodal_content(request)
+        scope = resolve_scope(request.container_ids)
+        if scope.matches_nothing:
+            return QueryResponse(
+                answer=NO_CONTAINER_MATCH, query=request.query, mode=request.mode
+            )
+        query_scope.set(scope)
         synthesis_thinking.set(resolve_thinking(request.thinking, request.query))
         synthesis_thinking_budget.set(resolve_thinking_budget(request.thinking_budget))
         answer = await get_rag().aquery_with_multimodal(
@@ -347,12 +373,25 @@ async def text_query_stream(request: QueryRequest):
 
         budget = resolve_thinking_budget(request.thinking_budget)
 
+        scope = resolve_scope(request.container_ids)
+        if scope.matches_nothing:
+            if session is not None:
+                session_store.add_turn(session, request.query, NO_CONTAINER_MATCH)
+                _schedule_condense(session)
+
+            async def _no_match():
+                yield NO_CONTAINER_MATCH
+
+            return StreamingResponse(_no_match(), media_type="text/plain")
+
         # Auto mode runs a buffered fast pass and may escalate; its own generator
         # sets the thinking contextvar and records the turn, so it bypasses the
         # single-pass _stream_result/_stream_and_record path below.
         if request.thinking == "auto":
 
             async def run(stream, **overrides):
+                # Set inside run so the scope is active on each (deferred) pass.
+                query_scope.set(scope)
                 return await get_rag().aquery(
                     request.query,
                     mode=request.mode,
@@ -378,9 +417,10 @@ async def text_query_stream(request: QueryRequest):
         thinking = resolve_thinking(request.thinking, request.query)
 
         async def make_result():
-            # Set inside make_result so the flag is active on both the initial
+            # Set inside make_result so the flags are active on both the initial
             # call and the retry path -- the latter runs from _stream_result in
             # the StreamingResponse context, after this route has returned.
+            query_scope.set(scope)
             synthesis_thinking.set(thinking)
             synthesis_thinking_budget.set(budget)
             return await get_rag().aquery(
@@ -404,9 +444,18 @@ async def multimodal_query_stream(request: MultimodalQueryRequest):
         content = _to_multimodal_content(request)
         budget = resolve_thinking_budget(request.thinking_budget)
 
+        scope = resolve_scope(request.container_ids)
+        if scope.matches_nothing:
+
+            async def _no_match():
+                yield NO_CONTAINER_MATCH
+
+            return StreamingResponse(_no_match(), media_type="text/plain")
+
         if request.thinking == "auto":
 
             async def run(stream, **overrides):
+                query_scope.set(scope)
                 return await get_rag().aquery_with_multimodal(
                     request.query,
                     multimodal_content=content,
@@ -423,6 +472,7 @@ async def multimodal_query_stream(request: MultimodalQueryRequest):
         thinking = resolve_thinking(request.thinking, request.query)
 
         async def make_result():
+            query_scope.set(scope)
             synthesis_thinking.set(thinking)
             synthesis_thinking_budget.set(budget)
             return await get_rag().aquery_with_multimodal(

@@ -2,9 +2,30 @@ from typing import Optional
 
 import numpy as np
 
+from .container_scope import ContainerScope
 from .models import DocumentRelatedness, DocumentTopics, RelationDetail, TaskStatus, TopicDetail
 from .rag_manager import get_rag
 from .task_store import list_tasks
+
+
+def filter_relatedness_pairs(
+    pairs: list[DocumentRelatedness], scope: Optional[ContainerScope]
+) -> list[DocumentRelatedness]:
+    """Strict container scope for the relatedness graph.
+
+    Keep a pair only when BOTH of its documents are in scope; a None / "All" scope is
+    a passthrough (no filtering). "Strict" (not bridge) semantics: an edge appears only
+    when both endpoints belong to the selected container(s), so the graph is the
+    self-contained subgraph of the scope with no out-of-scope neighbor nodes. Pure over
+    doc_ids -- no Milvus/graph access -- so the scoping is hermetically unit-testable.
+    """
+    if scope is None or scope.is_all:
+        return pairs
+    return [
+        p
+        for p in pairs
+        if p.doc_id in scope.doc_ids and p.related_doc_id in scope.doc_ids
+    ]
 
 
 async def compute_relatedness() -> list[DocumentRelatedness]:
