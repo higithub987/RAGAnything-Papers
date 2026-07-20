@@ -222,6 +222,48 @@
     color: var(--danger-text);
     border: 1px solid var(--danger-border);
   }
+  .containers-panel {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 0 0 16px;
+  }
+  .containers-panel-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-faint);
+  }
+  .upload-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 16px;
+  }
+  .upload-row-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+  .member-cell {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .member-cell .container-chip {
+    padding: 3px 10px;
+    font-size: 11px;
+  }
+  .member-cell .mini-select {
+    padding: 3px 6px;
+  }
+  .member-none {
+    color: var(--text-faint);
+    font-size: 12px;
+  }
 </style>
 </head>
 <body>
@@ -241,6 +283,18 @@
     <h1>Manage documents</h1>
     <p class="subtitle">Upload files into your RAG-Anything knowledge base.</p>
 
+    <div class="containers-panel" id="containers-panel">
+      <span class="containers-panel-label">Containers</span>
+      <div class="container-filter" id="containers-list"></div>
+    </div>
+
+    <div class="upload-row">
+      <span class="upload-row-label">Upload into</span>
+      <select class="mini-select" id="upload-container">
+        <option value="">All documents</option>
+      </select>
+    </div>
+
     <div class="dropzone" id="dropzone">
       <span class="dropzone-icon">↑</span>
       <p><strong>Click to browse</strong> or drag and drop files here</p>
@@ -256,6 +310,7 @@
           <th>File</th>
           <th>Status</th>
           <th>Uploaded</th>
+          <th>Containers</th>
           <th></th>
         </tr>
       </thead>
@@ -277,6 +332,16 @@
     const progressPanel = document.getElementById("progress-panel");
     const toastEl = document.getElementById("toast");
     let toastTimer = null;
+
+    const containersPanel = document.getElementById("containers-panel");
+    const containersList = document.getElementById("containers-list");
+    const uploadContainerSelect = document.getElementById("upload-container");
+
+    // Containers ("custom databases") + a by-id lookup. Populated from
+    // GET /containers; drives the management panel, the upload picker, and each
+    // row's membership chips. Empty until loadContainers() runs.
+    let containers = [];
+    let containersById = {};
 
     function showToast(message, type = "error") {
       toastEl.textContent = message;
@@ -475,6 +540,7 @@
               <td class="filename">${escapeHtml(task.file_name)}${errorLine}</td>
               <td><span class="badge ${task.status}">${task.status}</span></td>
               <td>${formatDate(task.created_at)}</td>
+              <td><div class="member-cell">${memberCell(task)}</div></td>
               <td>${deleteBtn}</td>
             </tr>
           `;
@@ -487,6 +553,81 @@
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
+    }
+
+    // --- Containers ("custom databases") -------------------------------------
+    function containerName(cid) {
+      return (containersById[cid] && containersById[cid].name) || cid;
+    }
+
+    async function loadContainers() {
+      try {
+        const response = await fetch("/containers");
+        if (response.ok) containers = await response.json();
+      } catch (err) {
+        /* offline / none -- fall back to no containers (the virtual "All") */
+      }
+      containersById = {};
+      for (const c of containers) containersById[c.id] = c;
+      renderContainersPanel();
+      renderUploadPicker();
+    }
+
+    // Refetch containers + documents, then repaint. Called after any container or
+    // membership mutation, since the doc list's polling stops once nothing is
+    // processing and wouldn't otherwise reflect the change.
+    async function reload() {
+      await loadContainers();
+      await refreshList();
+    }
+
+    function renderContainersPanel() {
+      const chips = containers
+        .map((c) => {
+          const count = (c.member_doc_ids || []).length;
+          return `<span class="container-chip is-static" title="${escapeHtml(c.name)}">${escapeHtml(c.name)}<span class="chip-count">${count}</span><button class="chip-action" data-rename-container="${escapeHtml(c.id)}" title="Rename">✎</button><button class="chip-remove" data-delete-container="${escapeHtml(c.id)}" title="Delete container">&times;</button></span>`;
+        })
+        .join("");
+      containersList.innerHTML =
+        chips +
+        `<button type="button" class="container-chip chip-add" data-new-container>+ New</button>`;
+    }
+
+    function renderUploadPicker() {
+      const current = uploadContainerSelect.value;
+      uploadContainerSelect.innerHTML =
+        `<option value="">All documents</option>` +
+        containers
+          .map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`)
+          .join("");
+      if (current && containers.some((c) => c.id === current)) {
+        uploadContainerSelect.value = current; // preserve a still-valid choice
+      }
+    }
+
+    // A document's membership cell: a chip per container (with × to remove once
+    // the doc is completed and thus has a doc_id), plus an "Add…" picker of the
+    // containers it isn't in yet. Read-only while still processing (no doc_id).
+    function memberCell(task) {
+      const ids = task.container_ids || [];
+      const editable = Boolean(task.doc_id);
+      const chips = ids.map((cid) => {
+        const remove = editable
+          ? `<button class="chip-remove" data-remove data-cid="${escapeHtml(cid)}" data-doc-id="${escapeHtml(task.doc_id)}" title="Remove from ${escapeHtml(containerName(cid))}">&times;</button>`
+          : "";
+        return `<span class="container-chip is-static">${escapeHtml(containerName(cid))}${remove}</span>`;
+      });
+      let add = "";
+      if (editable) {
+        const available = containers.filter((c) => !ids.includes(c.id));
+        if (available.length) {
+          const opts = available
+            .map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`)
+            .join("");
+          add = `<select class="mini-select" data-add-doc-id="${escapeHtml(task.doc_id)}"><option value="">+ Add…</option>${opts}</select>`;
+        }
+      }
+      return chips.join("") + add || `<span class="member-none">—</span>`;
     }
 
     function hasInFlightTasks() {
@@ -517,9 +658,10 @@
       render();
     }
 
-    async function uploadFile(file) {
+    async function uploadFile(file, containerId) {
       const formData = new FormData();
       formData.append("file", file);
+      if (containerId) formData.append("container_id", containerId);
 
       uploadStatus.textContent = `Uploading ${file.name}…`;
 
@@ -541,8 +683,10 @@
 
     async function handleFiles(fileList) {
       if (!fileList.length) return;
+      // One container choice applies to the whole batch (read once up front).
+      const containerId = uploadContainerSelect.value;
       try {
-        await Promise.all([...fileList].map((file) => uploadFile(file)));
+        await Promise.all([...fileList].map((file) => uploadFile(file, containerId)));
       } finally {
         uploadStatus.textContent = "";
       }
@@ -571,21 +715,115 @@
     });
 
     tableBody.addEventListener("click", async (event) => {
-      const deleteId = event.target.getAttribute("data-delete");
-      if (!deleteId) return;
+      // "Remove from this container" (non-destructive) -- the chip's × button.
+      const removeBtn = event.target.closest("[data-remove]");
+      if (removeBtn) {
+        const cid = removeBtn.getAttribute("data-cid");
+        const docId = removeBtn.getAttribute("data-doc-id");
+        const response = await fetch(`/containers/${cid}/documents/${docId}`, {
+          method: "DELETE",
+        });
+        if (response.ok || response.status === 404) {
+          await reload();
+        } else {
+          const data = await response.json().catch(() => ({}));
+          showToast(`Failed to remove from container: ${data.detail || response.status}`);
+        }
+        return;
+      }
 
-      if (!confirm("Delete this document?")) return;
+      // "Delete from the entire database" (destructive) -- the row's × button.
+      const deleteBtn = event.target.closest("[data-delete]");
+      if (!deleteBtn) return;
+      const deleteId = deleteBtn.getAttribute("data-delete");
+      if (
+        !confirm(
+          "Delete this document from the entire database? It will be removed from every container. This cannot be undone."
+        )
+      )
+        return;
       const response = await fetch(`/documents/${deleteId}`, { method: "DELETE" });
       if (response.ok || response.status === 404) {
         taskCache.delete(deleteId);
         render();
+        loadContainers(); // member counts changed server-side (doc forgotten)
       } else {
         const data = await response.json().catch(() => ({}));
         showToast(`Failed to delete document: ${data.detail || response.status}`);
       }
     });
 
-    refreshList();
+    // Per-row "Add to container" picker (the change event bubbles from <select>).
+    tableBody.addEventListener("change", async (event) => {
+      const select = event.target.closest("select[data-add-doc-id]");
+      if (!select) return;
+      const cid = select.value;
+      const docId = select.getAttribute("data-add-doc-id");
+      if (!cid) return;
+      const response = await fetch(`/containers/${cid}/documents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doc_id: docId }),
+      });
+      if (response.ok) {
+        await reload();
+      } else {
+        const data = await response.json().catch(() => ({}));
+        showToast(`Failed to add to container: ${data.detail || response.status}`);
+        select.value = "";
+      }
+    });
+
+    // Containers panel: create / rename / delete (native prompt/confirm).
+    containersPanel.addEventListener("click", async (event) => {
+      if (event.target.closest("[data-new-container]")) {
+        const name = (window.prompt("New container name") || "").trim();
+        if (!name) return;
+        const response = await fetch("/containers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        if (response.ok) await reload();
+        else showToast("Failed to create container");
+        return;
+      }
+
+      const renameBtn = event.target.closest("[data-rename-container]");
+      if (renameBtn) {
+        const cid = renameBtn.getAttribute("data-rename-container");
+        const current = containerName(cid);
+        const name = window.prompt("Rename container", current);
+        if (name === null) return;
+        const trimmed = name.trim();
+        if (!trimmed || trimmed === current) return;
+        const response = await fetch(`/containers/${cid}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: trimmed }),
+        });
+        if (response.ok) await reload();
+        else showToast("Failed to rename container");
+        return;
+      }
+
+      const deleteBtn = event.target.closest("[data-delete-container]");
+      if (deleteBtn) {
+        const cid = deleteBtn.getAttribute("data-delete-container");
+        if (
+          !window.confirm(
+            `Delete container "${containerName(cid)}"? Documents are not deleted — they just leave this container.`
+          )
+        )
+          return;
+        const response = await fetch(`/containers/${cid}`, { method: "DELETE" });
+        if (response.ok || response.status === 404) await reload();
+        else showToast("Failed to delete container");
+        return;
+      }
+    });
+
+    reload();
   </script>
 </body>
 </html>

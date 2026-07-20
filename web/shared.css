@@ -237,3 +237,90 @@ p.subtitle {
   color: var(--text-faint);
   font-size: 14px;
 }
+
+/* --- container chips (shared: documents membership, chat/visualize scope) --- */
+.container-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.container-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-strong);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.container-chip:hover {
+  background: var(--bg);
+}
+.container-chip.active {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+}
+/* a non-interactive pill (e.g. a document's membership badge) */
+.container-chip.is-static {
+  cursor: default;
+}
+.container-chip.is-static:hover {
+  background: var(--surface);
+}
+/* the "+ New" affordance */
+.container-chip.chip-add {
+  color: var(--blue-dark);
+  border-style: dashed;
+}
+.chip-count {
+  color: var(--text-faint);
+  font-weight: 600;
+}
+.container-chip.active .chip-count {
+  color: rgba(255, 255, 255, 0.75);
+}
+/* inline icon buttons inside a chip (rename ✎ / remove ×) */
+.chip-remove,
+.chip-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 -2px 0 0;
+  padding: 0 2px;
+  border: none;
+  background: none;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-faint);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.15s ease;
+}
+.chip-action:hover {
+  color: var(--blue-dark);
+}
+.chip-remove:hover {
+  color: var(--danger-text);
+}
+/* small token-styled <select> (upload picker, per-row "add to container") */
+.mini-select {
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-strong);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.mini-select:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}

@@ -422,6 +422,20 @@
   .info-pop strong {
     font-weight: 700;
   }
+  .scope-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 0 0 8px;
+  }
+  .scope-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-faint);
+  }
 </style>
 </head>
 <body>
@@ -458,6 +472,10 @@
 
       <form id="query-form">
         <textarea id="query" name="query" placeholder="What would you like to know?" required></textarea>
+        <div class="scope-row" id="scope-row" style="display: none;">
+          <span class="scope-label">Scope</span>
+          <div class="container-filter" id="container-filter"></div>
+        </div>
         <div class="row">
           <div class="think-field">
             <label>Thinking</label>
@@ -540,6 +558,66 @@
       event.preventDefault();
       if (!submitBtn.disabled) form.requestSubmit();
     });
+
+    // Container scope: which container(s) queries are restricted to. [] = the
+    // virtual "All" (no scoping); one or more ids = strict union. Persisted like
+    // the other query controls; sent as container_ids on each submit.
+    const QUERY_CONTAINERS_KEY = "ragQueryContainers";
+    const scopeRow = document.getElementById("scope-row");
+    const containerFilterEl = document.getElementById("container-filter");
+    let containers = [];
+    let selectedContainerIds = [];
+    try {
+      selectedContainerIds = JSON.parse(localStorage.getItem(QUERY_CONTAINERS_KEY)) || [];
+    } catch {
+      selectedContainerIds = [];
+    }
+
+    function renderContainerFilter() {
+      if (!containers.length) {
+        scopeRow.style.display = "none";
+        return;
+      }
+      scopeRow.style.display = "flex";
+      const chip = (id, label) => {
+        const active = id
+          ? selectedContainerIds.includes(id)
+          : selectedContainerIds.length === 0; // the "All" chip
+        return `<button type="button" class="container-chip${
+          active ? " active" : ""
+        }" data-id="${id ? escapeHtml(id) : ""}">${escapeHtml(label)}</button>`;
+      };
+      containerFilterEl.innerHTML =
+        chip("", "All documents") + containers.map((c) => chip(c.id, c.name)).join("");
+      containerFilterEl.querySelectorAll(".container-chip").forEach((btn) => {
+        btn.onclick = () => {
+          const id = btn.dataset.id;
+          if (!id) {
+            selectedContainerIds = []; // "All" clears the selection
+          } else {
+            selectedContainerIds = selectedContainerIds.includes(id)
+              ? selectedContainerIds.filter((x) => x !== id)
+              : [...selectedContainerIds, id];
+          }
+          localStorage.setItem(QUERY_CONTAINERS_KEY, JSON.stringify(selectedContainerIds));
+          renderContainerFilter();
+        };
+      });
+    }
+
+    async function loadContainers() {
+      try {
+        const r = await fetch("/containers");
+        if (r.ok) containers = await r.json();
+      } catch (err) {
+        /* offline / none -- fall back to the unscoped All view */
+      }
+      // Drop any saved ids for containers that no longer exist.
+      const valid = new Set(containers.map((c) => c.id));
+      selectedContainerIds = selectedContainerIds.filter((id) => valid.has(id));
+      renderContainerFilter();
+    }
+    loadContainers();
 
     const ACTIVE_MODE_KEY = "ragActiveMode";
     const CURRENT_SESSION_KEY = "ragCurrentSessionId";
@@ -908,8 +986,8 @@
           Number.isFinite(budgetVal) && budgetVal > 0 ? budgetVal : null;
         const requestBody =
           currentMode === "chat"
-            ? { query, mode, thinking: thinkingMode, thinking_budget, session_id: currentSessionId }
-            : { query, mode, thinking: thinkingMode, thinking_budget, conversation_history: [] };
+            ? { query, mode, thinking: thinkingMode, thinking_budget, container_ids: selectedContainerIds, session_id: currentSessionId }
+            : { query, mode, thinking: thinkingMode, thinking_budget, container_ids: selectedContainerIds, conversation_history: [] };
         const response = await fetch("/query/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
